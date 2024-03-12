@@ -5,8 +5,57 @@ import torch
 
 Numeric = Union[int, float, torch.Tensor]
 
+def dephase(state: torch.Tensor, k: int=1) -> torch.Tensor:
+    """Dephase EPG states by k indices.
+
+    S(dk) : F_k -> F_{k+dk}
+            Z_k -> Z_k
+
+    Args:
+        state (torch.Tensor): (N,3,K) or (3,K) array of EPG states.
+        k (int, optional): Number of state indices to dephase by. Defaults to 1.
+
+    Returns:
+        torch.Tensor: (N,3,K) or (3,K) array of dephased EPG states.
+    """
+    new_state = state
+
+    ### Dephase transverse magnetization (rows 1 and 2)
+    # Get the states that will pass through the coherent state; zero out states
+    # that wrap around
+    if k > 0:
+        tmp = state[..., 1:2, 1:k]
+        new_state[..., 1:2, 0:k] = 0
+    elif k < 0:
+        tmp = state[..., 0:1, 1:(-k)]
+        new_state[..., 0:1, 0:(-k)] = 0
+    else:
+        return new_state
+    
+    shiftdim = 1 if state.ndim < 3 else 2
+
+    # First row is dephasing magnetization F+; shift away from coherent state
+    new_state[..., 0:1, :] = torch.roll(new_state[..., 0:1, :], shifts=k, dims=shiftdim)
+    # Second row is rephasing magnetization F-; shift towards coherent state
+    new_state[..., 1:2, :] = torch.roll(new_state[..., 1:2, :], shifts=-k, dims=shiftdim)
+
+    # Update states that pass through coherence or become coherent
+    tmp = torch.conj(torch.flip(tmp, dims=[shiftdim]))
+    if k > 0:
+        new_state[..., 0:1, 1:k] = tmp  # Add new dephasing states
+        new_state[..., 0, 0] = torch.conj(new_state[..., 1, 0])  # Coherence
+    elif k < 0:
+        new_state[..., 1:2, 1:(-k)] = tmp  # Add new rephasing states
+        new_state[..., 1, 0] = torch.conj(new_state[..., 0, 0])  # Coherence
+    
+    # index 2 is longitudinal magnetization Z_k; no change
+        
+    return new_state
+
 def excitation_operator(flip_angle: Numeric, phase_angle: Numeric=0.0) -> torch.Tensor:
     """Operator for mixing magnetization between EPG states due to excitation.
+
+    Cross-reference Weigel 2015, "Extended phase graphs: Dephasing, RF pulses, and echoes - Pure and simple" Eq. 15.
 
     Args:
         flip_angle (Numeric): (N,1) or (1,) array of flip angles in degrees.
@@ -24,15 +73,15 @@ def excitation_operator(flip_angle: Numeric, phase_angle: Numeric=0.0) -> torch.
         T = torch.zeros(fa.shape[0], 3, 3, dtype=torch.cfloat)
 
     # Populate excitation entries
-    T[..., 0, 0] = torch.cos(fa / 2.0) ** 2
-    T[..., 0, 1] = torch.sin(fa / 2.0) ** 2 * torch.exp(2j * phase)
-    T[..., 0, 2] = -1j * torch.exp(1j * phase) * torch.sin(fa)
-    T[..., 1, 0] = torch.sin(fa / 2.0) ** 2 * torch.exp(-2j * phase)
-    T[..., 1, 1] = torch.cos(fa / 2.0) ** 2
-    T[..., 1, 2] = 1j * torch.exp(-1j * phase) * torch.sin(fa)
+    T[..., 0, 0] =                                  torch.cos(fa / 2.0) ** 2
+    T[..., 0, 1] =         torch.exp(+2j * phase) * torch.sin(fa / 2.0) ** 2
+    T[..., 0, 2] = -1.0j * torch.exp(+1j * phase) * torch.sin(fa)
+    T[..., 1, 0] =         torch.exp(-2j * phase) * torch.sin(fa / 2.0) ** 2
+    T[..., 1, 1] =                                  torch.cos(fa / 2.0) ** 2
+    T[..., 1, 2] = +1.0j * torch.exp(-1j * phase) * torch.sin(fa)
     T[..., 2, 0] = -0.5j * torch.exp(-1j * phase) * torch.sin(fa)
-    T[..., 2, 1] = 0.5j * torch.exp(1j * phase) * torch.sin(fa)
-    T[..., 2, 2] = torch.cos(fa)
+    T[..., 2, 1] = +0.5j * torch.exp(+1j * phase) * torch.sin(fa)
+    T[..., 2, 2] =                                  torch.cos(fa)
 
     return T
 

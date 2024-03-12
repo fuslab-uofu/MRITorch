@@ -150,3 +150,57 @@ class TestRelaxation(unittest.TestCase):
 
         self.assertEqual(Erecovery.shape, (6, 3,))
         self.assertTrue(torch.allclose(Erecovery, truth_recovery, atol=_atol))
+
+class TestDephase(unittest.TestCase):
+    def test_shifts(self):
+        s = torch.arange(15).view(3, 5)
+
+        shifted = epg.dephase(s, 0)
+        truth = torch.tensor([
+            [0, 1, 2, 3, 4],
+            [5, 6, 7, 8, 9],
+            [10, 11, 12, 13, 14]
+        ])
+        self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
+
+        shifted = epg.dephase(s, 1)
+        truth = torch.tensor([
+            [6, 0, 1, 2, 3],
+            [6, 7, 8, 9, 0],
+            [10, 11, 12, 13, 14]
+        ])
+        self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
+
+        shifted = epg.dephase(s, 2)
+        truth = torch.tensor([
+            [7, 6, 0, 1, 2],
+            [7, 8, 9, 0, 0],
+            [10, 11, 12, 13, 14]
+        ])
+        self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
+
+        shifted = epg.dephase(s, -1)
+        truth = torch.tensor([
+            [1, 2, 3, 4, 0],
+            [1, 5, 6, 7, 8],
+            [10, 11, 12, 13, 14]
+        ])
+        self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
+
+        shifted = epg.dephase(s, -3)
+        truth = torch.tensor([
+            [3, 4, 0, 0, 0],
+            [3, 2, 1, 5, 6],
+            [10, 11, 12, 13, 14]
+        ])
+        self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
+
+class TestEPG(unittest.TestCase):
+    def test_tse(self):
+        state = torch.zeros(3, 7, dtype=torch.cfloat)
+        state[2,0] = 1
+
+        Ty90 = epg.excitation_operator(90, 90)
+        Tx120 = epg.excitation_operator(120, 0)
+
+        state = Ty90 @ state
