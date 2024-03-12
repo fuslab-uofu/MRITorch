@@ -68,14 +68,8 @@ def relaxation_operator(
         Erecovery = torch.zeros(N, 3, dtype=torch.float)
 
     # Compute decay proportions for T1 and T2
-    if T1 == torch.inf:
-        E1 = totensor(1.0)
-    else:
-        E1 = torch.exp(-totensor(dt) / totensor(T1))
-    if T2 == torch.inf:
-        E2 = totensor(1.0)
-    else:
-        E2 = torch.exp(-totensor(dt) / totensor(T2))
+    E1 = torch.exp(-totensor(dt) / totensor(T1))
+    E2 = torch.exp(-totensor(dt) / totensor(T2))
     
     Erelax[..., 0] = E2
     Erelax[..., 1] = E2

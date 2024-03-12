@@ -63,7 +63,7 @@ class TestExcitation(unittest.TestCase):
         self.assertEqual(Tx.shape, (9, 3, 3))
         self.assertTrue(torch.allclose(Tx, truth, atol=_atol))
 
-class TestRecovery(unittest.TestCase):
+class TestRelaxation(unittest.TestCase):
     def test_defaults(self):
         Erelax, Erecovery = epg.relaxation_operator(1)
         truth_relax = torch.tensor([1, 1, 1], dtype=torch.float)
@@ -78,11 +78,75 @@ class TestRecovery(unittest.TestCase):
     def test_T1(self):
         T1vals = torch.tensor([10, 30, 100, 300, 1000, 3000], dtype=torch.float)
         Erelax, Erecovery = epg.relaxation_operator(1, T1=T1vals)
-        truth_relax = torch.tensor([1, 1, 1], dtype=torch.float)
-        truth_recovery = torch.tensor([1, 1, 1], dtype=torch.float)
+        E1 = torch.exp(-1 / T1vals)
+        E2 = torch.ones_like(E1)
+        Zs = torch.zeros_like(E1)
+        truth_relax = torch.stack([E2, E2, E1], dim=-1)
+        truth_recovery = torch.stack([Zs, Zs, (1 - E1)], dim=-1)
 
-        self.assertEqual(Erelax.shape, (3,))
+        self.assertEqual(Erelax.shape, (6, 3,))
         self.assertTrue(torch.allclose(Erelax, truth_relax, atol=_atol))
 
-        self.assertEqual(Erecovery.shape, (3,))
+        self.assertEqual(Erecovery.shape, (6, 3,))
+        self.assertTrue(torch.allclose(Erecovery, truth_recovery, atol=_atol))
+
+    def test_T2(self):
+        T2vals = torch.tensor([1, 3, 10, 30, 100, 300, 1000, 3000], dtype=torch.float)
+        Erelax, Erecovery = epg.relaxation_operator(1, T2=T2vals)
+        E2 = torch.exp(-1 / T2vals)
+        E1 = torch.ones_like(E2)
+        Zs = torch.zeros_like(E2)
+        truth_relax = torch.stack([E2, E2, E1], dim=-1)
+        truth_recovery = torch.stack([Zs, Zs, (1 - E1)], dim=-1)
+
+        self.assertEqual(Erelax.shape, (8, 3,))
+        self.assertTrue(torch.allclose(Erelax, truth_relax, atol=_atol))
+
+        self.assertEqual(Erecovery.shape, (8, 3,))
+        self.assertTrue(torch.allclose(Erecovery, truth_recovery, atol=_atol))
+
+    def test_M0(self):
+        M0vals = torch.tensor([0.1, 0.3, 1, 3, 10, 30], dtype=torch.float)
+        T1vals = torch.tensor([10, 30, 100, 300, 1000, 3000], dtype=torch.float)
+        Erelax, Erecovery = epg.relaxation_operator(1, T1=T1vals, M0=M0vals)
+        E1 = torch.exp(-1 / T1vals)
+        E2 = torch.ones_like(E1)
+        Zs = torch.zeros_like(E1)
+        truth_relax = torch.stack([E2, E2, E1], dim=-1)
+        truth_recovery = torch.stack([Zs, Zs, M0vals * (1 - E1)], dim=-1)
+
+        self.assertEqual(Erelax.shape, (6, 3,))
+        self.assertTrue(torch.allclose(Erelax, truth_relax, atol=_atol))
+
+        self.assertEqual(Erecovery.shape, (6, 3,))
+        self.assertTrue(torch.allclose(Erecovery, truth_recovery, atol=_atol))
+
+    def test_dt(self):
+        dt = torch.tensor([1, 2, 3, 4, 5, 6], dtype=torch.float)
+        Erelax, Erecovery = epg.relaxation_operator(dt)
+        truth_relax = torch.stack([torch.ones_like(dt), torch.ones_like(dt), torch.ones_like(dt)], dim=-1)
+        truth_recovery = torch.stack([torch.zeros_like(dt), torch.zeros_like(dt), torch.zeros_like(dt)], dim=-1)
+
+        self.assertEqual(Erelax.shape, (6, 3,))
+        self.assertTrue(torch.allclose(Erelax, truth_relax, atol=_atol))
+
+        self.assertEqual(Erecovery.shape, (6, 3,))
+        self.assertTrue(torch.allclose(Erecovery, truth_recovery, atol=_atol))
+
+    def test_multi(self):
+        dt = torch.tensor([1, 2, 3, 4, 5, 6], dtype=torch.float)
+        T1vals = torch.tensor([10, 30, 100, 300, 1000, 3000], dtype=torch.float)
+        T2vals = torch.tensor([1, 3, 10, 30, 100, 300], dtype=torch.float)
+        M0vals = torch.tensor([0.1, 0.3, 1, 3, 10, 30], dtype=torch.float)
+        Erelax, Erecovery = epg.relaxation_operator(dt, T1=T1vals, T2=T2vals, M0=M0vals)
+        E1 = torch.exp(-dt / T1vals)
+        E2 = torch.exp(-dt / T2vals)
+        Zs = torch.zeros_like(E1)
+        truth_relax = torch.stack([E2, E2, E1], dim=-1)
+        truth_recovery = torch.stack([Zs, Zs, M0vals * (1 - E1)], dim=-1)
+
+        self.assertEqual(Erelax.shape, (6, 3,))
+        self.assertTrue(torch.allclose(Erelax, truth_relax, atol=_atol))
+
+        self.assertEqual(Erecovery.shape, (6, 3,))
         self.assertTrue(torch.allclose(Erecovery, truth_recovery, atol=_atol))
