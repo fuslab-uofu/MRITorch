@@ -330,29 +330,32 @@ class TestEPG(unittest.TestCase):
     def test_hyperecho(self):
         nPulse = 10
         phaseShifts = [0, 90, -90, 180]
+
+        flip_angles = [fibonacci(i) for i in range(1, nPulse)]
+        flip_angles = [90,] + flip_angles + [180,] + [-x for x in reversed(flip_angles)]
+        phase_angles = [i for i in range(1, nPulse)]
+        phase_angles = [90,] + phase_angles + [0,] + [-x for x in reversed(phase_angles)]
+
         for phase in phaseShifts:
             state = torch.zeros(3, 2*nPulse + 2, dtype=torch.cfloat)
             state[2,0] = 1
-            # Apply initial excitation pulse
-            state = epg.dephase(epg.excitation_operator(90, phase) @ state)
-
             # Apply excitations
-            for i in range(1, nPulse):
-                fa, phi = fibonacci(i), i + phase
-                state = epg.dephase(epg.excitation_operator(fa, phi) @ state)
-
-            # Apply refocusing pulse
-            state = epg.dephase(epg.excitation_operator(180, 0) @ state)
-
-            # Apply balanced refocusing pulses
-            for i in reversed(range(1, nPulse)):
-                fa, phi = fibonacci(i), i + phase
-                state = epg.dephase(epg.excitation_operator(-fa, -phi) @ state)
+            for fa, phi in zip(flip_angles, phase_angles):
+                state = epg.dephase(epg.excitation_operator(fa, phase + phi) @ state)
             
-            print(state[:,0])
-        
-        # Not sure what the correct phase angles are for the hyper echo
-        self.assertTrue(False)
+            truth = torch.zeros(3, 2*nPulse + 2, dtype=torch.cfloat)
+            # I had some uncertainty about the phase shifts, but these match the results from the sample code provided by Weigel 2015 so I will accept them as truth.
+            if phase == 0:
+                truth[0,0] = 1
+            elif phase == 90:
+                truth[0,0] = torch.tensor([1j,], dtype=torch.cfloat)
+            elif phase == 180:
+                truth[0,0] = -1
+            elif phase == -90:
+                truth[0,0] = torch.tensor([-1j,], dtype=torch.cfloat)
+            truth[1,0] = torch.conj(state[0,0])
+
+            self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
 from functools import lru_cache
  
