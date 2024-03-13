@@ -326,3 +326,44 @@ class TestEPG(unittest.TestCase):
             [0.666243805591516, -0.194032158692984, -0.0944675360665872]
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
+
+    def test_hyperecho(self):
+        nPulse = 10
+        phaseShifts = [0, 90, -90, 180]
+        for phase in phaseShifts:
+            state = torch.zeros(3, 2*nPulse + 2, dtype=torch.cfloat)
+            state[2,0] = 1
+            # Apply initial excitation pulse
+            state = epg.dephase(epg.excitation_operator(90, phase) @ state)
+
+            # Apply excitations
+            for i in range(1, nPulse):
+                fa, phi = fibonacci(i), i + phase
+                state = epg.dephase(epg.excitation_operator(fa, phi) @ state)
+
+            # Apply refocusing pulse
+            state = epg.dephase(epg.excitation_operator(180, 0) @ state)
+
+            # Apply balanced refocusing pulses
+            for i in reversed(range(1, nPulse)):
+                fa, phi = fibonacci(i), i + phase
+                state = epg.dephase(epg.excitation_operator(-fa, -phi) @ state)
+            
+            print(state[:,0])
+        
+        # Not sure what the correct phase angles are for the hyper echo
+        self.assertTrue(False)
+
+from functools import lru_cache
+ 
+# Function for nth Fibonacci number
+ 
+@lru_cache(None)
+def fibonacci(num: int) -> int:
+    # check if num between 1, 0
+    # it will return num
+    if num < 2:
+        return num
+ 
+    # return the fibonacci of num - 1 & num - 2
+    return fibonacci(num - 1) + fibonacci(num - 2)
