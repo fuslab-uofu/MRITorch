@@ -195,6 +195,22 @@ class TestDephase(unittest.TestCase):
             [10, 11, 12, 13, 14]
         ])
         self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
+    
+    def test_inversion(self):
+        tmp = torch.arange(15).view(3, 5)
+        tmp[1,0] = 0
+
+        s = torch.zeros(3, 10, dtype=torch.cfloat)
+        s[0,0:5] = tmp[0,:]
+        s[1,0:5] = 1j*tmp[1,:]
+
+        for i in range(-4, 5):
+            self.assertTrue(
+                torch.allclose(s,
+                    epg.dephase(epg.dephase(s, i), -i),
+                    atol=_atol)
+                    )
+        
 
 class TestEPG(unittest.TestCase):
     def test_tse(self):
