@@ -18,7 +18,7 @@ def dephase(state: torch.Tensor, k: int=1) -> torch.Tensor:
     Returns:
         torch.Tensor: (N,3,K) or (3,K) array of dephased EPG states.
     """
-    new_state = state
+    new_state = state.clone()
 
     ### Dephase transverse magnetization (rows 1 and 2)
     # Get the states that will pass through the coherent state; zero out states
