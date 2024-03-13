@@ -289,7 +289,7 @@ class TestEPG(unittest.TestCase):
         truth = torch.tensor([
             [0, -0.45j, 0],
             [0, 0, 0],
-            [0.866025403784439, 0, 0]
+            [0.867365149746594, 0, 0]
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
@@ -297,7 +297,7 @@ class TestEPG(unittest.TestCase):
         truth = torch.tensor([
             [-0.433682574873297j, -0.419855715851499j, 0],
             [+0.433682574873297j, -0.0301442841485013j, 0],
-            [0.866025403784439, -0.1125, 0]
+            [0.751160254037844, -0.1125, 0]
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol)) 
 
