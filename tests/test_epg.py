@@ -152,11 +152,11 @@ class TestRelaxation(unittest.TestCase):
         self.assertTrue(torch.allclose(Erecovery, truth_recovery, atol=_atol))
 
 class TestDephase(unittest.TestCase):
-    def test_shifts(self):
+    def test_shifts_matrix(self):
         s = torch.arange(15).view(3, 5)
         s[1,0] = 0
 
-        shifted = epg.dephase(s, 0)
+        shifted = epg.dephase_matrix(s, 0)
         truth = torch.tensor([
             [0, 1, 2, 3, 4],
             [0, 6, 7, 8, 9],
@@ -164,7 +164,7 @@ class TestDephase(unittest.TestCase):
         ])
         self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
 
-        shifted = epg.dephase(s, 1)
+        shifted = epg.dephase_matrix(s, 1)
         truth = torch.tensor([
             [6, 0, 1, 2, 3],
             [6, 7, 8, 9, 0],
@@ -172,7 +172,7 @@ class TestDephase(unittest.TestCase):
         ])
         self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
 
-        shifted = epg.dephase(s, 2)
+        shifted = epg.dephase_matrix(s, 2)
         truth = torch.tensor([
             [7, 6, 0, 1, 2],
             [7, 8, 9, 0, 0],
@@ -180,7 +180,7 @@ class TestDephase(unittest.TestCase):
         ])
         self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
 
-        shifted = epg.dephase(s, -1)
+        shifted = epg.dephase_matrix(s, -1)
         truth = torch.tensor([
             [1, 2, 3, 4, 0],
             [1, 0, 6, 7, 8],
@@ -188,7 +188,7 @@ class TestDephase(unittest.TestCase):
         ])
         self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
 
-        shifted = epg.dephase(s, -3)
+        shifted = epg.dephase_matrix(s, -3)
         truth = torch.tensor([
             [3, 4, 0, 0, 0],
             [3, 2, 1, 0, 6],
@@ -207,10 +207,32 @@ class TestDephase(unittest.TestCase):
         for i in range(-4, 5):
             self.assertTrue(
                 torch.allclose(s,
-                    epg.dephase(epg.dephase(s, i), -i),
+                    epg.dephase_matrix(epg.dephase_matrix(s, i), -i),
                     atol=_atol)
                     )
-        
+
+    def test_shifts_vector(self):
+        F_states = torch.complex(
+            torch.randint(1, 15, (10, 9), dtype=torch.float),
+            torch.randint(1, 15, (10, 9), dtype=torch.float)
+        )
+
+        Z_states = torch.complex(
+            torch.randint(1, 15, (10, 5), dtype=torch.float),
+            torch.randint(1, 15, (10, 5), dtype=torch.float)
+        )
+
+        for i in range(-4, 5):
+            print(i)
+            F_shifted = epg.dephase_vector(F_states, i)
+            # Compute matrix version
+            S = epg.vectors_to_matrix(F_states, Z_states)
+            # Shift matrix
+            S = epg.dephase_matrix(S, i)
+            # Convert back to vectors
+            F_from_matrix, _ = epg.matrix_to_vectors(S)
+            # Compare
+            self.assertTrue(torch.allclose(F_from_matrix, F_shifted, atol=_atol))
 
 class TestEPG(unittest.TestCase):
     def test_tse(self):
@@ -229,7 +251,7 @@ class TestEPG(unittest.TestCase):
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
-        state = epg.dephase(state, 1)
+        state = epg.dephase_matrix(state, 1)
         truth = torch.tensor([
             [0, 1, 0, 0, 0, 0, 0],
             [0, 0, 0, 0, 0, 0, 0],
@@ -245,7 +267,7 @@ class TestEPG(unittest.TestCase):
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
-        state = epg.dephase(state, 1)
+        state = epg.dephase_matrix(state, 1)
         truth = torch.tensor([
             [0.75, 0, 0.25, 0, 0, 0, 0],
             [0.75, 0, 0, 0, 0, 0, 0],
@@ -253,7 +275,7 @@ class TestEPG(unittest.TestCase):
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
-        state = Tx120 @ epg.dephase(state)
+        state = Tx120 @ epg.dephase_matrix(state)
         truth = torch.tensor([
             [0, -0.1875, 0, 0.0625, 0, 0, 0],
             [0, 0.9375, 0, 0.1875, 0, 0, 0],
@@ -261,7 +283,7 @@ class TestEPG(unittest.TestCase):
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
-        state = epg.dephase(state, 1)
+        state = epg.dephase_matrix(state, 1)
         truth = torch.tensor([
             [0.9375, 0, -0.1875, 0, 0.0625, 0, 0],
             [0.9375, 0, 0.1875, 0, 0, 0, 0],
@@ -269,7 +291,7 @@ class TestEPG(unittest.TestCase):
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
-        state = epg.dephase(Tx120 @ epg.dephase(state))
+        state = epg.dephase_matrix(Tx120 @ epg.dephase_matrix(state))
         truth = torch.tensor([
             [0.84375, 0, 0.28125, 0, -0.140625, 0, 0.015625],
             [0.84375, 0, -0.046875, 0, 0.046875, 0, 0],
@@ -278,7 +300,7 @@ class TestEPG(unittest.TestCase):
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
     
     def test_fast_gre(self):
-        """Compare to Weigel 2015 p.283: Simulating a Rapid Gradient Echo Sequence"""
+        """Weigel 2015: Simulating a Rapid Gradient Echo Sequence"""
         state = torch.zeros(3, 3, dtype=torch.cfloat)
         state[2,0] = 1
 
@@ -300,7 +322,7 @@ class TestEPG(unittest.TestCase):
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
-        state = Erelax[:,None] * epg.dephase(state, 1)
+        state = Erelax[:,None] * epg.dephase_matrix(state, 1)
         state[:,0:1] = Erecovery[:,None] + state[:,0:1]
         truth = torch.tensor([
             [0, -0.45j, 0],
@@ -317,7 +339,7 @@ class TestEPG(unittest.TestCase):
         ], dtype=torch.cfloat)
         self.assertTrue(torch.allclose(state, truth, atol=_atol)) 
 
-        state = Erelax[:,None] * epg.dephase(state, 1)
+        state = Erelax[:,None] * epg.dephase_matrix(state, 1)
         state[:,0:1] = Erecovery[:,None] + state[:,0:1]
         state = Tx30 @ state
         truth = torch.tensor([
@@ -328,7 +350,8 @@ class TestEPG(unittest.TestCase):
         self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
     def test_hyperecho(self):
-        nPulse = 10
+        """Weigel 2015: Hyperecho"""
+        nPulse = 15
         phaseShifts = [0, 90, -90, 180]
 
         flip_angles = [fibonacci(i) for i in range(1, nPulse)]
@@ -341,10 +364,10 @@ class TestEPG(unittest.TestCase):
             state[2,0] = 1
             # Apply excitations
             for fa, phi in zip(flip_angles, phase_angles):
-                state = epg.dephase(epg.excitation_operator(fa, phase + phi) @ state)
+                state = epg.dephase_matrix(epg.excitation_operator(fa, phase + phi) @ state)
             
             truth = torch.zeros(3, 2*nPulse + 2, dtype=torch.cfloat)
-            # I had some uncertainty about the phase shifts, but these match the results from the sample code provided by Weigel 2015 so I will accept them as truth.
+            # I have some uncertainty about the phase shifts, but these match the results from the sample code provided by Weigel 2015 so I will accept them.
             if phase == 0:
                 truth[0,0] = 1
             elif phase == 90:
@@ -357,10 +380,70 @@ class TestEPG(unittest.TestCase):
 
             self.assertTrue(torch.allclose(state, truth, atol=_atol))
 
+class TestRepresentations(unittest.TestCase):
+    def test_matrix_to_vectors(self):
+        S = 1j*torch.arange(15).view(3, 5)
+
+        with self.assertRaises(ValueError):
+            F, Z = epg.matrix_to_vectors(S)
+        S[1,0] = 0
+
+        Ftruth = torch.tensor([0j, 1j, 2j, 3j, 4j, -9j, -8j, -7j, -6j], dtype=torch.cfloat)
+        Ztruth = torch.tensor([10j, 11j, 12j, 13j, 14j], dtype=torch.cfloat)
+        F, Z = epg.matrix_to_vectors(S)
+        self.assertTrue(torch.allclose(F, Ftruth, atol=_atol))
+        self.assertTrue(torch.allclose(Z, Ztruth, atol=_atol))
+    
+    def test_vectors_to_matrix(self):
+        F = torch.tensor([0j, 1j, 2j, 3j, 4j, -9j, -8j, -7j, -6j], dtype=torch.cfloat)
+        Z = torch.tensor([10j, 11j, 12j, 13j, 14j], dtype=torch.cfloat)
+
+        S = epg.vectors_to_matrix(F, Z)
+        truth = 1j*torch.arange(15).view(3, 5)
+        truth[1,0] = 0
+        self.assertTrue(torch.allclose(S, truth, atol=_atol))
+
+    def test_vectors_to_matrix_multi(self):
+        N, K = 2, 4
+        F = torch.arange(2*N*(K*2-1), dtype=torch.float).view(N, K*2-1, 2)
+        F = torch.complex(F[:,:,0], F[:,:,1])
+
+        Z = torch.arange(2*N*K, dtype=torch.float).view(N, K, 2)
+        Z = torch.complex(Z[:,:,0], Z[:,:,1])
+
+        S = epg.vectors_to_matrix(F, Z)
+        truth = torch.tensor([[[ 0.+1.j,  2.+3.j,  4.+5.j,  6.+7.j],
+         [ 0.-1.j, 12.-13.j, 10.-11.j,  8.-9.j],
+         [ 0.+1.j,  2.+3.j,  4.+5.j,  6.+7.j]],
+        [[14.+15.j, 16.+17.j, 18.+19.j, 20.+21.j],
+         [14.-15.j, 26.-27.j, 24.-25.j, 22.-23.j],
+         [ 8.+9.j, 10.+11.j, 12.+13.j, 14.+15.j]]])
+        
+        self.assertTrue(torch.allclose(S, truth, atol=_atol))
+
+    def test_matrix_to_vectors_multi(self):
+        S = torch.tensor([[[ 0.+1.j,  2.+3.j,  4.+5.j,  6.+7.j],
+         [ 0.-1.j, 12.-13.j, 10.-11.j,  8.-9.j],
+         [ 0.+1.j,  2.+3.j,  4.+5.j,  6.+7.j]],
+        [[14.+15.j, 16.+17.j, 18.+19.j, 20.+21.j],
+         [14.-15.j, 26.-27.j, 24.-25.j, 22.-23.j],
+         [ 8.+9.j, 10.+11.j, 12.+13.j, 14.+15.j]]])
+        
+        N, K = 2, 4
+        Ftruth = torch.arange(2*N*(K*2-1), dtype=torch.float).view(N, K*2-1, 2)
+        Ftruth = torch.complex(Ftruth[:,:,0], Ftruth[:,:,1])
+
+        Ztruth = torch.arange(2*N*K, dtype=torch.float).view(N, K, 2)
+        Ztruth = torch.complex(Ztruth[:,:,0], Ztruth[:,:,1])
+
+        F, Z = epg.matrix_to_vectors(S)
+
+        self.assertTrue(torch.allclose(Z, Ztruth, atol=_atol))
+        self.assertTrue(torch.allclose(F, Ftruth, atol=_atol))
+
 from functools import lru_cache
  
 # Function for nth Fibonacci number
- 
 @lru_cache(None)
 def fibonacci(num: int) -> int:
     # check if num between 1, 0

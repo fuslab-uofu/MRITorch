@@ -5,8 +5,106 @@ import torch
 
 Numeric = Union[int, float, torch.Tensor]
 
-def dephase(state: torch.Tensor, k: int=1) -> torch.Tensor:
-    """Dephase EPG states by k indices.
+def matrix_to_vectors(S: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Converts EPG state matrix to state vectors.
+
+    Args:
+        S (torch.Tensor): (N,3,K) or (3,K) matrix of EPG states.
+    
+    Returns:
+        (torch.Tensor, torch.Tensor): ((N,2*K-1), (N, K)) or ((2*K-1,), (K,)) 
+        arrays of (F+, Z) EPG states. The first entry represents F states and 
+        the second represents Z states. 
+
+        If N = 2,
+        Vector format:
+        F[0] == F_0
+        F[1] == F_{+1}
+        F[2] == F_{+2}
+        F[-1] == F[K-1] == F_{-1}
+        F[-2] == F[K-2] == F_{-2}
+
+        Matrix format:
+        [[     F[0] ,      F[ 1],       F[ 2] , ...,      F[K-1]],
+         [conj(F[0]), conj(F[-1]), conj(F[-2]), ..., conj(F[-K])],
+         [     Z[0] ,      Z[ 1],       Z[ 2] , ...,      Z[K-1]]
+    """
+    K = S.shape[-1]
+    # Preallocate outputs
+    if S.ndim > 2:
+        N = S.shape[0]
+        F = torch.zeros(N, 2 * K - 1, dtype=torch.cfloat)
+        Z = torch.zeros(N, K, dtype=torch.cfloat)
+    else:
+        F = torch.zeros(2 * K - 1, dtype=torch.cfloat)
+        Z = torch.zeros(K, dtype=torch.cfloat)
+    
+    # Check that the 0th state is correctly defined
+    if torch.any(S[..., 1, 0] != torch.conj(S[..., 0, 0])):
+        raise ValueError("The 0th state is not correctly defined. S[...,0,0] != conj(S[...,1,0])")
+
+    # Populate vectors
+    F[..., 0:K] = S[..., 0, 0:K]
+    F[..., -K+1:] = torch.flip(torch.conj(S[..., 1, 1:K]), dims=[-1])
+    Z[..., :] = S[..., 2, :]
+
+    return F, Z
+
+def vectors_to_matrix(F: torch.Tensor, Z: torch.Tensor) -> torch.Tensor:
+    """Converts EPG state vectors to a state matrix.
+
+    Args:
+        F (torch.Tensor): _description_
+        Z (torch.Tensor): _description_
+    
+    Returns:
+        torch.Tensor: _description_
+    """
+    K = (F.shape[-1] + 1) // 2
+    # Preallocate output
+    if F.ndim > 1:
+        N = F.shape[0]
+        S = torch.zeros(N, 3, K, dtype=torch.cfloat)
+    else:
+        S = torch.zeros(3, K, dtype=torch.cfloat)
+    
+    # Populate matrix
+    S[..., 0, :] = F[..., 0:K]
+    S[..., 1, 0] = torch.conj(F[..., 0])
+    S[..., 1, 1:] = torch.flip(torch.conj(F[..., -K+1:]), dims=[-1])
+    S[..., 2, :] = Z
+
+    return S
+
+def dephase_vector(F_states: torch.Tensor, k: int=1) -> torch.Tensor:
+    """Dephase EPG state vector by k indices.
+
+    Args:
+        F (torch.Tensor): (N,2*K-1) or (2*K-1,) array of EPG states.
+        k (int, optional): Number of state indices to dephase by. Defaults to 1.
+
+    Returns:
+        torch.Tensor: (N,2*K-1) or (2*K-1,) array of dephased EPG states.
+    """
+    new_states = F_states.clone()
+    if k == 0:
+        return new_states
+
+    K = (F_states.shape[-1] + 1) // 2
+
+    # Zero out states that wrap around
+    if k > 0:
+        new_states[..., K-k:K] = 0
+    elif k < 0:
+        new_states[..., K:K-k] = 0
+
+    # Apply circular shift to dephase states
+    new_states = torch.roll(new_states, shifts=k, dims=-1)
+
+    return new_states
+
+def dephase_matrix(state: torch.Tensor, k: int=1) -> torch.Tensor:
+    """Dephase EPG state matrix by k indices.
 
     S(dk) : F_k -> F_{k+dk}
             Z_k -> Z_k
