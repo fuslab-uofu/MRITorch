@@ -63,6 +63,21 @@ class TestExcitation(unittest.TestCase):
         self.assertEqual(Tx.shape, (9, 3, 3))
         self.assertTrue(torch.allclose(Tx, truth, atol=_atol))
 
+    def test_shapes(self):
+        for M in range(3, 6):
+            for N in range(2, 5):
+                T = epg.excitation_operator(
+                    torch.rand(M,N),
+                    phase_angle=torch.rand(M,N)
+                )
+                self.assertEqual(T.shape, (M,N,3,3))
+
+                T = epg.excitation_operator(
+                    torch.rand(M,1),
+                    phase_angle=torch.rand(N)
+                )
+                self.assertEqual(T.shape, (M,N,3,3))
+
 class TestRelaxation(unittest.TestCase):
     def test_defaults(self):
         Erelax, Erecovery = epg.relaxation_operator(1)
@@ -151,6 +166,29 @@ class TestRelaxation(unittest.TestCase):
         self.assertEqual(Erecovery.shape, (6, 3,))
         self.assertTrue(torch.allclose(Erecovery, truth_recovery, atol=_atol))
 
+    def test_shapes(self):
+        for M in range(3, 6):
+            for N in range(1, 4):
+                for P in range(2, 5):
+                    for Q in range(4, 7):
+                        Erelax, Erecovery = epg.relaxation_operator(
+                            torch.rand(M, N, P, Q),
+                            T1=torch.rand(M, N, P, Q),
+                            T2=torch.rand(M, N, P, Q),
+                            M0=torch.rand(M, N, P, Q)
+                        )
+                        self.assertEqual(Erelax.shape, (M, N, P, Q, 3))
+                        self.assertEqual(Erecovery.shape, (M, N, P, Q, 3))
+
+                        Erelax, Erecovery = epg.relaxation_operator(
+                            torch.rand(M,1,P,1),
+                            T1=torch.rand(N,1,Q),
+                            T2=torch.rand(P,1),
+                            M0=torch.rand(Q)
+                        )
+                        self.assertEqual(Erelax.shape, (M,N,P,Q,3))
+                        self.assertEqual(Erecovery.shape, (M,N,P,Q,3,))
+
 class TestDephase(unittest.TestCase):
     def test_shifts_matrix(self):
         s = torch.arange(15).view(3, 5)
@@ -196,6 +234,24 @@ class TestDephase(unittest.TestCase):
         ])
         self.assertTrue(torch.allclose(shifted, truth, atol=_atol))
     
+    def test_shape_matrix(self):
+        for _ in range(10):
+            sz = torch.randint(2, 5, (5,))
+            sz = sz[1:(sz[0]+1)]
+            sz[-2] = 3
+            rng = range(-sz[-1], sz[-1]+1)
+            tmp = torch.complex(torch.randn(*sz), torch.randn(*sz)) # type: ignore
+
+            sz[-1] = sz[-1]*2 + 1
+            s = torch.zeros(*sz, dtype=torch.cfloat) # type: ignore
+            s[...,:tmp.shape[-1]] = tmp
+            s[...,1,0] = torch.conj(s[...,0,0])
+
+            for i in rng:
+                shifted = epg.dephase_matrix(epg.dephase_matrix(s, i), -i)
+                self.assertEqual(shifted.shape, s.shape)
+                self.assertTrue(torch.allclose(shifted, s, atol=_atol))
+
     def test_inversion(self):
         tmp = torch.arange(15).view(3, 5)
         tmp[1,0] = 0
@@ -212,27 +268,25 @@ class TestDephase(unittest.TestCase):
                     )
 
     def test_shifts_vector(self):
-        F_states = torch.complex(
-            torch.randint(1, 15, (10, 9), dtype=torch.float),
-            torch.randint(1, 15, (10, 9), dtype=torch.float)
-        )
+        for _ in range(10):
+            sz = torch.randint(2, 5, (5,))
+            sz[-1] = 9
+            F_states = torch.complex(torch.randn(*sz), torch.randn(*sz))
 
-        Z_states = torch.complex(
-            torch.randint(1, 15, (10, 5), dtype=torch.float),
-            torch.randint(1, 15, (10, 5), dtype=torch.float)
-        )
+            sz[-1] = 5
+            Z_states = torch.complex(torch.randn(*sz), torch.randn(*sz))
 
-        for i in range(-4, 5):
-            print(i)
-            F_shifted = epg.dephase_vector(F_states, i)
-            # Compute matrix version
-            S = epg.vectors_to_matrix(F_states, Z_states)
-            # Shift matrix
-            S = epg.dephase_matrix(S, i)
-            # Convert back to vectors
-            F_from_matrix, _ = epg.matrix_to_vectors(S)
-            # Compare
-            self.assertTrue(torch.allclose(F_from_matrix, F_shifted, atol=_atol))
+            for i in range(-4, 5):
+                print(i)
+                F_shifted = epg.dephase_vector(F_states, i)
+                # Compute matrix version
+                S = epg.vectors_to_matrix(F_states, Z_states)
+                # Shift matrix
+                S = epg.dephase_matrix(S, i)
+                # Convert back to vectors
+                F_from_matrix, _ = epg.matrix_to_vectors(S)
+                # Compare
+                self.assertTrue(torch.allclose(F_from_matrix, F_shifted, atol=_atol))
 
 class TestEPG(unittest.TestCase):
     def test_tse(self):
@@ -423,12 +477,12 @@ class TestRepresentations(unittest.TestCase):
 
     def test_matrix_to_vectors_multi(self):
         S = torch.tensor([[[ 0.+1.j,  2.+3.j,  4.+5.j,  6.+7.j],
-         [ 0.-1.j, 12.-13.j, 10.-11.j,  8.-9.j],
-         [ 0.+1.j,  2.+3.j,  4.+5.j,  6.+7.j]],
+            [ 0.-1.j, 12.-13.j, 10.-11.j,  8.-9.j],
+            [ 0.+1.j,  2.+3.j,  4.+5.j,  6.+7.j]],
         [[14.+15.j, 16.+17.j, 18.+19.j, 20.+21.j],
-         [14.-15.j, 26.-27.j, 24.-25.j, 22.-23.j],
-         [ 8.+9.j, 10.+11.j, 12.+13.j, 14.+15.j]]])
-        
+            [14.-15.j, 26.-27.j, 24.-25.j, 22.-23.j],
+            [ 8.+9.j, 10.+11.j, 12.+13.j, 14.+15.j]]])
+
         N, K = 2, 4
         Ftruth = torch.arange(2*N*(K*2-1), dtype=torch.float).view(N, K*2-1, 2)
         Ftruth = torch.complex(Ftruth[:,:,0], Ftruth[:,:,1])
