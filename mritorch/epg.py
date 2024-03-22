@@ -1,67 +1,123 @@
 from __future__ import annotations
-from typing import Tuple, List, Union
+from typing import Tuple, List, Union, Literal, overload
 
 import torch
 
 Numeric = Union[int, float, torch.Tensor]
 NumSeq = Union[List[Numeric], Tuple[Numeric], Numeric]
 
-def simulate_vector(
-        fa_steps: NumSeq=0.0,
-        phase_steps: NumSeq=0.0,
-        time_steps: NumSeq=0.0,
-        dephase_steps: NumSeq=1,
-        save_steps: NumSeq=1,
-        T1: Numeric=torch.inf,
-        T2: Numeric=torch.inf,
-        M0: Numeric=1.0,
-        initial_F: Numeric=0.0,
-        initial_Z: Numeric=1.0,
-        ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Simulate EPG states for a sequence of RF pulses.
-
-    Arguments are either sequential (list of scalars) or batch parameters. Sequential paramters can be either a single scalar or length `numSteps`. Batch parameters can be single scalars or have 0th dimension with N entries (N,). Initial states should have shape *******.
-
-    For each entry in the sequence:
-    1. Excitation (flip_angles, phase_angles)
-    -. [Diffusion - not currently implemented]
-    2. Relaxation (time_steps, T1, T2, M0)
-    -. [Flow - not currently implemented]
-    3. Dephasing (dephase_steps)
-    4. Save out the state (save_steps)
-    Repeat in order for each entry in sequence.
-
-    Args:
-        fa_steps (NumSeq, optional): _description_. Defaults to 0.0.
-        phase_steps (NumSeq, optional): _description_. Defaults to 0.0.
-        time_steps (NumSeq, optional): _description_. Defaults to 0.0.
-        dephase_steps (NumSeq, optional): _description_. Defaults to 1.
-        save_steps (NumSeq, optional): _description_. Defaults to 1.
-        T1 (Numeric, optional): _description_. Defaults to torch.inf.
-        T2 (Numeric, optional): _description_. Defaults to torch.inf.
-        M0 (Numeric, optional): _description_. Defaults to 1.0.
-        initial_F (Numeric, optional): _description_. Defaults to 0.0.
-        initial_Z (Numeric, optional): _description_. Defaults to 1.0.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: _description_
-    """
-    pass
-
-def simulate_matrix(
-        fa_steps: NumSeq=0.0,
-        phase_steps: NumSeq=0.0,
-        time_steps: NumSeq=0.0,
-        dephase_steps: NumSeq=1,
-        save_steps: NumSeq=1,
-        T1: Numeric=torch.inf,
-        T2: Numeric=torch.inf,
-        M0: Numeric=1.0,
-        initial_state: Numeric=torch.tensor([[0., 0., 1.]])
+def _simulate_events_matrix(
+        fa_steps: torch.Tensor,
+        phase_steps: torch.Tensor,
+        time_steps: torch.Tensor,
+        dephase_steps: torch.Tensor,
+        save_steps: torch.Tensor,
+        B1: torch.Tensor,
+        T1: torch.Tensor,
+        T2: torch.Tensor,
+        M0: torch.Tensor,
+        initial_state: torch.Tensor
         ) -> torch.Tensor:
+    num_steps = fa_steps.shape[-1]
+    num_saves = int(torch.sum(save_steps))
+    state = initial_state.clone()
+    # Preallocate output
+    output = torch.zeros(*state.shape, num_saves, dtype=torch.cfloat) # type: ignore
+
+    for i in range(num_steps):
+        # Excitation
+        T_ex = excitation_operator(
+            torch.abs(B1) * fa_steps[i],
+            phase_steps[i] + rad2deg(torch.angle(B1))
+            )
+        state = T_ex @ state
+
+        # Relaxation
+        E_relax, E_recover = relaxation_operator(time_steps[i], T1, T2, M0)
+        state = E_relax[..., None] * state + E_recover[..., None]
+
+        # Dephasing
+        state = dephase_matrix(state, int(dephase_steps[i]))
+
+        # Save
+        if save_steps[i]:
+            save_idx = int(torch.sum(save_steps[:i+1]) - 1)
+            output[..., save_idx] = state
+    
+    return output
+
+def _simulate_events_vector(
+        fa_steps: torch.Tensor,
+        phase_steps: torch.Tensor,
+        time_steps: torch.Tensor,
+        dephase_steps: torch.Tensor,
+        save_steps: torch.Tensor,
+        B1: torch.Tensor,
+        T1: torch.Tensor,
+        T2: torch.Tensor,
+        M0: torch.Tensor,
+        initial_F: torch.Tensor,
+        initial_Z: torch.Tensor
+        ) -> Tuple[torch.Tensor, torch.Tensor]:
+    num_steps = fa_steps.shape[-1]
+    num_saves = int(torch.sum(save_steps))
+    F, Z = initial_F.clone(), initial_Z.clone()
+    
+    k_max = Z.shape[-1] - 1
+
+    # Preallocate output
+    F_output = torch.zeros(*F.shape, num_saves, dtype=torch.cfloat) # type: ignore
+    Z_output = torch.zeros(*Z.shape, num_saves, dtype=torch.cfloat) # type: ignore
+
+    for i in range(num_steps):
+        # Excitation
+        T_ex = excitation_operator(
+            torch.abs(B1) * fa_steps[i],
+            phase_steps[i] + rad2deg(torch.angle(B1))
+            )
+        
+        F, Z = matrix_to_vectors(T_ex @ vectors_to_matrix(F, Z))
+
+        # Fp, Fm = F[..., :k_max+1], F[..., -k_max:]
+        # F[..., :k_max+1] = T_ex[..., 0, 0] * Fp + T_ex[..., 0, 1] * torch.conj(Fm) + T_ex[..., 0, 2] * Z
+        # F[..., -k_max:] = torch.conj( T_ex[..., 1, 0] * Fp + T_ex[..., 1, 1] * torch.conj(Fm) + T_ex[..., 1, 2] * Z )
+        # Z = T_ex[..., 2, 0] * Fp + T_ex[..., 2, 1] * torch.conj(Fm) + T_ex[..., 2, 2] * Z
+
+        # Relaxation
+        E_relax, E_recover = relaxation_operator(time_steps[i], T1, T2, M0)
+
+        F = E_relax[..., 0] * F
+        Z[..., :] = E_relax[..., 2] * Z[..., :]
+        Z[..., 0] = Z[..., 0] + E_recover[..., 2]
+
+        # Dephasing
+        F = dephase_vector(F, int(dephase_steps[i]))
+
+        # Save
+        if save_steps[i]:
+            save_idx = int(torch.sum(save_steps[:i+1]) - 1)
+            F_output[..., save_idx] = F
+            Z_output[..., save_idx] = Z
+    
+    return F_output, Z_output
+
+def simulate_events(
+    fa_steps: NumSeq=0.0,
+    phase_steps: NumSeq=0.0,
+    time_steps: NumSeq=0.0,
+    dephase_steps: NumSeq=1,
+    save_steps: NumSeq=1,
+    num_steps: int | None=None,
+    B1: Numeric=1.0,
+    T1: Numeric=torch.inf,
+    T2: Numeric=torch.inf,
+    M0: Numeric=1.0,
+    state_representation: Literal['matrix', 'vector']='matrix',
+    initial_state: torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None=None
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """Simulate EPG states for a sequence of RF pulses.
 
-    Arguments are either sequential (list of scalars) or batch parameters. Sequential paramters can be either a single scalar or length `numSteps`. Batch parameters can be single scalars or have 0th dimension with N entries (N,). Initial states should have shape *******.
+    Arguments are either sequential (list of scalars) or batch parameters. Sequential paramters must be broadcastable to the same shape, where the final dimension is the number of steps to iterate over. Batch parameters can be single scalars or have 0th dimension with N entries (N,). Initial states should have shape *******.
 
     For each entry in the sequence:
     1. Excitation (flip_angles, phase_angles)
@@ -73,88 +129,85 @@ def simulate_matrix(
     Repeat in order for each entry in sequence.
 
     Args:
-        fa_steps (NumSeq, optional): _description_. Defaults to 0.0.
-        phase_steps (NumSeq, optional): _description_. Defaults to 0.0.
-        time_steps (NumSeq, optional): _description_. Defaults to 0.0.
-        dephase_steps (NumSeq, optional): _description_. Defaults to 1.
-        save_steps (NumSeq, optional): _description_. Defaults to 1.
+    Sequence parameters:
+        fa_steps (NumSeq, optional): Sequence of nominal flip angles for the sequence with length `num_steps`. Defaults to 0.0.
+        phase_steps (NumSeq, optional): Sequence of nominal phase angles for the sequence with length `num_steps`. Defaults to 0.0.
+        time_steps (NumSeq, optional): Sequence of relaxation time delays for the sequence with length `num_steps`. Defaults to 0.0.
+        dephase_steps (NumSeq, optional): Sequence of epg dephasing steps with length `num_steps`. Defaults to 1.
+        save_steps (NumSeq, optional): Sequence defining whether or not to save out the final state data for each  `num_steps`. Defaults to 1.
+    Voxel parameters:
+        B1 (Numeric, optional): Local magnitude and phase of the excitation (real or complex scale and/or phase factor). Defaults to 1.0.
         T1 (Numeric, optional): _description_. Defaults to torch.inf.
         T2 (Numeric, optional): _description_. Defaults to torch.inf.
         M0 (Numeric, optional): _description_. Defaults to 1.0.
-        initial_state (Numeric, optional): _description_. Defaults to torch.tensor([0., 0., 1.]).
+    Simulation parameters:
+        initial_state (Numeric | None, optional): _description_. Defaults to None.
+        state_representation (Literal['matrix', 'vector'], optional): _description_. Defaults to 'matrix'.
 
     Returns:
         torch.Tensor: _description_
     """
-    FAs = totensor(fa_steps)
-    phases = totensor(phase_steps)
-    dts = totensor(time_steps)
-    dks = totensor(dephase_steps)
-    saves = totensor(save_steps)
-    T1vals = totensor(T1)
-    T2vals = totensor(T2)
-    M0vals = totensor(M0)
-    initial = totensor(initial_state)
-
-    # Determine number of steps
-    steps = max(FAs.shape[0], phases.shape[0], dts.shape[0], dks.shape[0], saves.shape[0])
-
-    sh = (steps, )
-    if FAs.ndim == 0 or FAs.shape[0] == 1:
-        FAs = FAs.repeat(steps).reshape(sh)
-    if phases.ndim == 0 or phases.shape[0] == 1:
-        phases = phases.repeat(steps).reshape(sh)
-    if dts.ndim == 0 or dts.shape[0] == 1:
-        dts = dts.repeat(steps).reshape(sh)
-    if dks.ndim == 0 or dks.shape[0] == 1:
-        dks = dks.repeat(steps).reshape(sh)
-    if saves.ndim == 0 or saves.shape[0] == 1:
-        saves = saves.repeat(steps).reshape(sh)
-
-    numSaves = torch.sum(saves)
-
-    K = torch.max(torch.cumsum(dks, dim=0)) + 1
-    
-    # Determine number of entries
-    N = max(T1vals.shape[0], T2vals.shape[0],
-            M0vals.shape[0], initial.shape[0])
-    
-    sh = (N, 1)
-    if T1vals.ndim == 0 or T1vals.shape[0] == 1:
-        T1vals = T1vals.repeat(N).reshape(sh)
-    if T2vals.ndim == 0 or T2vals.shape[0] == 1:
-        T2vals = T2vals.repeat(N).reshape(sh)
-    if M0vals.ndim == 0 or M0vals.shape[0] == 1:
-        M0vals = M0vals.repeat(N).reshape(sh)
-    
-    state = torch.zeros(N, 3, K, dtype=torch.cfloat)
-    if initial.ndim == 2:
-        state[:, :, 0] = initial
+    # Convert sequence parameters to tensors
+    fas, phases, dts, dks, saves = map(totensor, (fa_steps, phase_steps, time_steps, dephase_steps, save_steps))
+    # Operating mode - repeat pattern N times, or apply series of uniquely specified events
+    if num_steps is not None:
+        if num_steps < 1:
+            raise ValueError("num_steps must be a positive integer.")
     else:
-        state[:, :, :] = initial
+        num_steps = max(
+            fas.shape[-1] if fas.ndim > 0 else 1,
+            phases.shape[-1] if phases.ndim > 0 else 1,
+            dts.shape[-1] if dts.ndim > 0 else 1,
+            dks.shape[-1] if dks.ndim > 0 else 1,
+            saves.shape[-1] if saves.ndim > 0 else 1
+            )
+    # Broadcast sequence parameters to the same shape with num_steps entries
+    fas = torch.broadcast_to(fas, (num_steps,))
+    phases = torch.broadcast_to(phases, (num_steps,))
+    dts = torch.broadcast_to(dts, (num_steps,))
+    dks = torch.broadcast_to(dks, (num_steps,))
+    saves = torch.broadcast_to(saves, (num_steps,))
 
-    # Preallocate outputs
-    output = torch.zeros(N, 3, K, numSaves, dtype=torch.cfloat)
+    # Maximum total dephasing moment
+    max_dephase = torch.max(torch.cumsum(dks, dim=-1))
 
-    # Loop through sequence
-    for iStep in range(steps):
-        # Excitation
-        Texcite = excitation_operator(FAs[iStep], phases[iStep])
-        state = torch.matmul(Texcite, state)
+    # Convert voxel parameters to tensors
+    b1, t1, t2, m0 = map(totensor, (B1, T1, T2, M0))
 
-        # Relaxation
-        Erelax, Erecovery = relaxation_operator(dts[iStep], T1vals, T2vals, M0vals)
-        state = Erelax[..., None] * state
-        state[..., :, 0] = state[..., :, 0] + Erecovery
+    # Get the broadcastable shape for voxel parameters
+    vox_param_shape = torch.broadcast_shapes(b1.shape, t1.shape, t2.shape, m0.shape)
 
-        # Dephasing
-        state = dephase_matrix(state, int(dks[iStep]))
+    # Branch for different representations of EPG states
+    if state_representation == 'matrix':
+        if initial_state is None:
+            matrix_shape = vox_param_shape + (3, max_dephase + 1)
 
-        # Save state
-        if saves[iStep]:
-            output[..., :, :, torch.sum(saves[:iStep])] = state
+            initial_state = torch.zeros(*matrix_shape, dtype=torch.cfloat) # type: ignore
+            initial_state[..., 2, 0] = m0.clone() # type: ignore
+        else:
+            initial_state = totensor(initial_state) # type: ignore
+
+        return _simulate_events_matrix(
+            fas, phases, dts, dks, saves, b1, t1, t2, m0,
+            initial_state # type: ignore
+        )
     
-    return output
+    else:
+        if initial_state is None:
+            F_shape = vox_param_shape + (2*max_dephase + 1,)
+            Z_shape = vox_param_shape + (max_dephase + 1,)
+
+            F = torch.zeros(*F_shape, dtype=torch.cfloat) # type: ignore
+            Z = torch.zeros(*Z_shape, dtype=torch.cfloat) # type: ignore
+            Z[..., 0] = m0.clone()
+
+        else:
+            F = totensor(initial_state[0])
+            Z = totensor(initial_state[1])
+        
+        return _simulate_events_vector(
+            fas, phases, dts, dks, saves, b1, t1, t2, m0, F, Z
+        )
 
 def matrix_to_vectors(S: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Converts EPG state matrix to state vectors.
@@ -356,13 +409,17 @@ def relaxation_operator(
 
     return Erelax, Erecover
 
-def totensor(x: Numeric | NumSeq) -> torch.Tensor:
+def totensor(x: NumSeq) -> torch.Tensor:
     """Convert input to tensor."""
     if torch.is_tensor(x):
         return x # type: ignore
     else:
         return torch.tensor(x)
 
-def deg2rad(deg: Numeric | NumSeq) -> torch.Tensor:
+def deg2rad(deg: NumSeq) -> torch.Tensor:
     """Convert degrees to radians."""
     return totensor(deg) * torch.pi / 180.0
+
+def rad2deg(rad: NumSeq) -> torch.Tensor:
+    """Convert radians to degrees."""
+    return totensor(rad) * 180.0 / torch.pi

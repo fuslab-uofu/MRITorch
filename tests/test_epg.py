@@ -271,13 +271,12 @@ class TestDephase(unittest.TestCase):
         for _ in range(10):
             sz = torch.randint(2, 5, (5,))
             sz[-1] = 9
-            F_states = torch.complex(torch.randn(*sz), torch.randn(*sz))
+            F_states = torch.complex(torch.randn(*sz), torch.randn(*sz)) # type: ignore
 
             sz[-1] = 5
-            Z_states = torch.complex(torch.randn(*sz), torch.randn(*sz))
+            Z_states = torch.complex(torch.randn(*sz), torch.randn(*sz)) # type: ignore
 
             for i in range(-4, 5):
-                print(i)
                 F_shifted = epg.dephase_vector(F_states, i)
                 # Compute matrix version
                 S = epg.vectors_to_matrix(F_states, Z_states)
@@ -288,7 +287,7 @@ class TestDephase(unittest.TestCase):
                 # Compare
                 self.assertTrue(torch.allclose(F_from_matrix, F_shifted, atol=_atol))
 
-class TestEPG(unittest.TestCase):
+class TestIntegration(unittest.TestCase):
     def test_tse(self):
         """Compare to Weigel 2015 p.281: Simulating Turbo Spin Echo Sequences"""
         state = torch.zeros(3, 7, dtype=torch.cfloat)
@@ -410,29 +409,66 @@ class TestEPG(unittest.TestCase):
 
         flip_angles = [fibonacci(i) for i in range(1, nPulse)]
         flip_angles = [90,] + flip_angles + [180,] + [-x for x in reversed(flip_angles)]
+        flip_angles = torch.tensor(flip_angles, dtype=torch.float)
         phase_angles = [i for i in range(1, nPulse)]
         phase_angles = [90,] + phase_angles + [0,] + [-x for x in reversed(phase_angles)]
+        phase_angles = torch.tensor(phase_angles, dtype=torch.float)
 
-        for phase in phaseShifts:
-            state = torch.zeros(3, 2*nPulse + 2, dtype=torch.cfloat)
-            state[2,0] = 1
-            # Apply excitations
-            for fa, phi in zip(flip_angles, phase_angles):
-                state = epg.dephase_matrix(epg.excitation_operator(fa, phase + phi) @ state)
-            
-            truth = torch.zeros(3, 2*nPulse + 2, dtype=torch.cfloat)
-            # I have some uncertainty about the phase shifts, but these match the results from the sample code provided by Weigel 2015 so I will accept them.
-            if phase == 0:
-                truth[0,0] = 1
-            elif phase == 90:
-                truth[0,0] = torch.tensor([1j,], dtype=torch.cfloat)
-            elif phase == 180:
-                truth[0,0] = -1
-            elif phase == -90:
-                truth[0,0] = torch.tensor([-1j,], dtype=torch.cfloat)
-            truth[1,0] = torch.conj(state[0,0])
+        time_steps = torch.zeros_like(flip_angles)
+        dephase_steps = torch.ones_like(flip_angles)
+        save_steps = torch.ones_like(flip_angles)
 
-            self.assertTrue(torch.allclose(state, truth, atol=_atol))
+        B1 = torch.exp(1j * epg.deg2rad(phaseShifts)) #ignore
+        T1 = torch.inf * torch.ones(*B1.shape)
+        T2 = torch.inf * torch.ones(*B1.shape)
+        M0 = torch.ones(*B1.shape)
+
+        initial_state = torch.zeros(
+            *B1.shape, 3, flip_angles.shape[0] + 1, dtype=torch.cfloat
+            )
+        initial_state[...,2,0] = 1
+
+        final_state_direct = epg._simulate_events_matrix(
+            flip_angles,
+            phase_angles,
+            time_steps,
+            dephase_steps,
+            save_steps,
+            B1, T1, T2, M0,
+            initial_state
+        )
+
+        final_state_public = epg.simulate_events(
+            fa_steps=flip_angles,
+            phase_steps=phase_angles,
+            B1=B1,
+            state_representation='matrix'
+        )
+
+        truth = torch.zeros(
+            4, 3, flip_angles.shape[0] + 1, dtype=torch.cfloat
+            )
+        truth[0,0,0] = 1
+        truth[1,0,0] = torch.tensor(1j, dtype=torch.cfloat)
+        truth[2,0,0] = torch.tensor(-1j, dtype=torch.cfloat)
+        truth[3,0,0] = -1
+
+        truth[:,1,0] = torch.conj(truth[:,0,0])
+
+        self.assertTrue(torch.allclose(final_state_direct[...,-1], truth, atol=_atol))
+        self.assertTrue(torch.allclose(final_state_public[...,-1], truth, atol=_atol))
+
+        final_state_vector = epg.simulate_events(
+            fa_steps=flip_angles,
+            phase_steps=phase_angles,
+            B1=B1,
+            state_representation='vector'
+        )
+
+        F_truth, Z_truth = epg.matrix_to_vectors(truth)
+
+        self.assertTrue(torch.allclose(final_state_vector[0][..., -1], F_truth, atol=_atol))
+        self.assertTrue(torch.allclose(final_state_vector[1][..., -1], Z_truth, atol=_atol))
 
 class TestRepresentations(unittest.TestCase):
     def test_matrix_to_vectors(self):
