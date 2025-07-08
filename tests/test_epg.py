@@ -418,7 +418,7 @@ class TestIntegration(unittest.TestCase):
         dephase_steps = torch.ones_like(flip_angles)
         save_steps = torch.ones_like(flip_angles)
 
-        B1 = torch.exp(1j * epg.deg2rad(phaseShifts)) #ignore
+        B1 = torch.exp(1j * epg.deg2rad(phaseShifts)) #type: ignore
         T1 = torch.inf * torch.ones(*B1.shape)
         T2 = torch.inf * torch.ones(*B1.shape)
         M0 = torch.ones(*B1.shape)
@@ -456,7 +456,7 @@ class TestIntegration(unittest.TestCase):
         truth[:,1,0] = torch.conj(truth[:,0,0])
 
         self.assertTrue(torch.allclose(final_state_direct[...,-1], truth, atol=_atol))
-        self.assertTrue(torch.allclose(final_state_public[...,-1], truth, atol=_atol))
+        self.assertTrue(torch.allclose(final_state_public[...,-1], truth, atol=_atol)) # type: ignore
 
         final_state_vector = epg.simulate_events(
             fa_steps=flip_angles,
