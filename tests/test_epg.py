@@ -2,7 +2,7 @@ import unittest
 
 import torch
 
-from mritorch import epg
+from mritorch.sim import epg
 
 _atol = 1e-6  # Absolute tolerance for allclose
 

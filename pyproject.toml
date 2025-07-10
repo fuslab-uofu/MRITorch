@@ -1,14 +1,18 @@
 [build-system]
-requires = ["hatchling >= 1.26"]
-build-backend = "hatchling.build"
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "mritorch"
 version = "0.0.1"
+dependencies = [
+  "torch >= 2.0.0"
+]
 authors = [
   { name="Samuel I. Adams-Tew", email="samuel.adams@utah.edu" },
 ]
 description = "A physics-informed PyTorch library for quantitative MRI"
+keywords = ["MRI", "PyTorch", "physics-informed", "quantitative MRI"]
 readme = "README.md"
 requires-python = ">=3.9"
 classifiers = [
@@ -19,5 +23,4 @@ license = "MIT"
 license-files = ["LICEN[CS]E*"]
 
 [project.urls]
-Homepage = "https://github.com/pypa/sampleproject"
-Issues = "https://github.com/pypa/sampleproject/issues"
+Homepage = "https://github.com/fuslab-uofu/MRITorch"
