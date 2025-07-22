@@ -115,37 +115,53 @@ def simulate_events(
     state_representation: Literal['matrix', 'vector']='matrix',
     initial_state: torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None=None
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    """Simulate EPG states for a sequence of RF pulses.
+    """
+    Simulate EPG states for a sequence of RF pulses.
 
-    Arguments are either sequential (list of scalars) or batch parameters. Sequential paramters must be broadcastable to the same shape, where the final dimension is the number of steps to iterate over. Batch parameters can be single scalars or have 0th dimension with N entries (N,). Initial states should have shape *******.
+    Parameters
+    ----------
+    fa_steps : NumSeq, optional
+        Sequence of nominal flip angles for the sequence with length `num_steps`. Defaults to 0.0.
+    phase_steps : NumSeq, optional
+        Sequence of nominal phase angles for the sequence with length `num_steps`. Defaults to 0.0.
+    time_steps : NumSeq, optional
+        Sequence of relaxation time delays for the sequence with length `num_steps`. Defaults to 0.0.
+    dephase_steps : NumSeq, optional
+        Sequence of epg dephasing steps with length `num_steps`. Defaults to 1.
+    save_steps : NumSeq, optional
+        Sequence defining whether or not to save out the final state data for each `num_steps`. Defaults to 1.
+    num_steps : int or None, optional
+        Number of steps to simulate. If None, inferred from the length of sequence parameters.
+    B1 : Numeric, optional
+        Local magnitude and phase of the excitation (real or complex scale and/or phase factor). Defaults to 1.0.
+    T1 : Numeric, optional
+        T1 relaxation time. Defaults to torch.inf.
+    T2 : Numeric, optional
+        T2 relaxation time. Defaults to torch.inf.
+    M0 : Numeric, optional
+        Equilibrium magnetization. Defaults to 1.0.
+    state_representation : {'matrix', 'vector'}, optional
+        Representation of EPG states. Defaults to 'matrix'.
+    initial_state : torch.Tensor or tuple of torch.Tensor or None, optional
+        Initial state of the system. If None, initialized to equilibrium.
+
+    Returns
+    -------
+    torch.Tensor or tuple of torch.Tensor
+        Simulated EPG states. The output format depends on `state_representation`.
+
+    Notes
+    -----
+    Arguments are either sequential (list of scalars) or batch parameters. Sequential parameters must be broadcastable to the same shape, where the final dimension is the number of steps to iterate over. Batch parameters can be single scalars or have 0th dimension with N entries (N,). Initial states should have shape matching the broadcasted batch and state dimensions.
 
     For each entry in the sequence:
-    1. Excitation (flip_angles, phase_angles)
-    -. [Diffusion - not currently implemented]
-    2. Relaxation (time_steps, T1, T2, M0)
-    -. [Flow - not currently implemented]
-    3. Dephasing (dephase_steps)
-    4. Save out the state (save_steps)
-    Repeat in order for each entry in sequence.
-
-    Args:
-    Sequence parameters:
-        fa_steps (NumSeq, optional): Sequence of nominal flip angles for the sequence with length `num_steps`. Defaults to 0.0.
-        phase_steps (NumSeq, optional): Sequence of nominal phase angles for the sequence with length `num_steps`. Defaults to 0.0.
-        time_steps (NumSeq, optional): Sequence of relaxation time delays for the sequence with length `num_steps`. Defaults to 0.0.
-        dephase_steps (NumSeq, optional): Sequence of epg dephasing steps with length `num_steps`. Defaults to 1.
-        save_steps (NumSeq, optional): Sequence defining whether or not to save out the final state data for each  `num_steps`. Defaults to 1.
-    Voxel parameters:
-        B1 (Numeric, optional): Local magnitude and phase of the excitation (real or complex scale and/or phase factor). Defaults to 1.0.
-        T1 (Numeric, optional): _description_. Defaults to torch.inf.
-        T2 (Numeric, optional): _description_. Defaults to torch.inf.
-        M0 (Numeric, optional): _description_. Defaults to 1.0.
-    Simulation parameters:
-        initial_state (Numeric | None, optional): _description_. Defaults to None.
-        state_representation (Literal['matrix', 'vector'], optional): _description_. Defaults to 'matrix'.
-
-    Returns:
-        torch.Tensor: _description_
+        1. Excitation (flip_angles, phase_angles)
+        -. [Diffusion - not currently implemented]
+        2. Relaxation (time_steps, T1, T2, M0)
+        -. [Flow - not currently implemented]
+        3. Dephasing (dephase_steps)
+        4. Save out the state (save_steps)
+        Repeat in order for each entry in sequence.
     """
     # Convert sequence parameters to tensors
     fas, phases, dts, dks, saves = map(totensor, (fa_steps, phase_steps, time_steps, dephase_steps, save_steps))
@@ -210,26 +226,30 @@ def simulate_events(
         )
 
 def matrix_to_vectors(S: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Converts EPG state matrix to state vectors.
+    """
+    Convert EPG state matrix to state vectors.
 
-    Args:
-        S (torch.Tensor): (...,3,K) matrix of EPG states.
-    
-    Returns:
-        (torch.Tensor, torch.Tensor): ((...,2*K-1), (..., K)) arrays of (F+, Z) EPG states. 
+    Parameters
+    ----------
+    S : torch.Tensor
+        (..., 3, K) matrix of EPG states.
 
+    Returns
+    -------
+    tuple of torch.Tensor
+        Tuple ((..., 2*K-1), (..., K)) arrays of (F+, Z) EPG states.
         If N = 2,
         Vector format:
-        F[0] == F_0
-        F[1] == F_{+1}
-        F[2] == F_{+2}
-        F[-1] == F[K-1] == F_{-1}
-        F[-2] == F[K-2] == F_{-2}
-
+            F[0] == F_0
+            F[1] == F_{+1}
+            F[2] == F_{+2}
+            F[-1] == F[K-1] == F_{-1}
+            F[-2] == F[K-2] == F_{-2}
         Matrix format:
-        [[     F[0] ,      F[ 1],       F[ 2] , ...,      F[K-1]],
-         [conj(F[0]), conj(F[-1]), conj(F[-2]), ..., conj(F[-K])],
-         [     Z[0] ,      Z[ 1],       Z[ 2] , ...,      Z[K-1]]
+            [[     F[0] ,      F[ 1],       F[ 2] , ...,      F[K-1]],
+             [conj(F[0]), conj(F[-1]), conj(F[-2]), ..., conj(F[-K])],
+             [     Z[0] ,      Z[ 1],       Z[ 2] , ...,      Z[K-1]]
+            ]
     """
     bshape = S.shape[:-2]
     K = S.shape[-1]
@@ -249,14 +269,20 @@ def matrix_to_vectors(S: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return F, Z
 
 def vectors_to_matrix(F: torch.Tensor, Z: torch.Tensor) -> torch.Tensor:
-    """Converts EPG state vectors to a state matrix.
+    """
+    Convert EPG state vectors to a state matrix.
 
-    Args:
-        F (torch.Tensor): _description_
-        Z (torch.Tensor): _description_
-    
-    Returns:
-        torch.Tensor: _description_
+    Parameters
+    ----------
+    F : torch.Tensor
+        EPG F+/- state vector.
+    Z : torch.Tensor
+        EPG Z state vector.
+
+    Returns
+    -------
+    torch.Tensor
+        EPG state matrix (..., 3, K).
     """
     bshape = F.shape[:-1]
     K = (F.shape[-1] + 1) // 2
@@ -272,14 +298,20 @@ def vectors_to_matrix(F: torch.Tensor, Z: torch.Tensor) -> torch.Tensor:
     return S
 
 def dephase_vector(F_states: torch.Tensor, k: int=1) -> torch.Tensor:
-    """Dephase EPG state vector by k indices.
+    """
+    Dephase EPG state vector by k indices.
 
-    Args:
-        F (torch.Tensor): (N,2*K-1) or (2*K-1,) array of EPG states.
-        k (int, optional): Number of state indices to dephase by. Defaults to 1.
+    Parameters
+    ----------
+    F_states : torch.Tensor
+        (N, 2*K-1) or (2*K-1,) array of EPG states.
+    k : int, optional
+        Number of state indices to dephase by. Defaults to 1.
 
-    Returns:
-        torch.Tensor: (N,2*K-1) or (2*K-1,) array of dephased EPG states.
+    Returns
+    -------
+    torch.Tensor
+        (N, 2*K-1) or (2*K-1,) array of dephased EPG states.
     """
     new_states = F_states.clone()
     if k == 0:
@@ -299,17 +331,23 @@ def dephase_vector(F_states: torch.Tensor, k: int=1) -> torch.Tensor:
     return new_states
 
 def dephase_matrix(state: torch.Tensor, k: int=1) -> torch.Tensor:
-    """Dephase EPG state matrix by k indices.
+    """
+    Dephase EPG state matrix by k indices.
 
     S(dk) : F_k -> F_{k+dk}
             Z_k -> Z_k
 
-    Args:
-        state (torch.Tensor): (...,3,K) array of EPG states.
-        k (int, optional): Number of state indices to dephase by. Defaults to 1.
+    Parameters
+    ----------
+    state : torch.Tensor
+        (..., 3, K) array of EPG states.
+    k : int, optional
+        Number of state indices to dephase by. Defaults to 1.
 
-    Returns:
-        torch.Tensor: (...,3,K) array of dephased EPG states.
+    Returns
+    -------
+    torch.Tensor
+        (..., 3, K) array of dephased EPG states.
     """
     new_state = state.clone()
 
@@ -344,16 +382,24 @@ def dephase_matrix(state: torch.Tensor, k: int=1) -> torch.Tensor:
     return new_state
 
 def excitation_operator(flip_angle: Numeric, phase_angle: Numeric=0.0) -> torch.Tensor:
-    """Operator for mixing magnetization between EPG states due to excitation.
+    """
+    Operator for mixing magnetization between EPG states due to excitation.
 
-    Cross-reference Weigel 2015, "Extended phase graphs: Dephasing, RF pulses, and echoes - Pure and simple" Eq. 15.
+    Cross-reference
+    ---------------
+    Weigel 2015, "Extended phase graphs: Dephasing, RF pulses, and echoes - Pure and simple" Eq. 15.
 
-    Args:
-        flip_angle (Numeric): array of flip angles in degrees.
-        phase_angle (Numeric, optional): array of phase angles in degrees. Defaults to 0.0.
+    Parameters
+    ----------
+    flip_angle : Numeric
+        Array of flip angles in degrees.
+    phase_angle : Numeric, optional
+        Array of phase angles in degrees. Defaults to 0.0.
 
-    Returns:
-        torch.Tensor: (...,3,3) array of excitation operators, where `...` is the broadcastable shape of all input arguments. Use matrix multiplication to apply to EPG state matrix.
+    Returns
+    -------
+    torch.Tensor
+        (..., 3, 3) array of excitation operators, where `...` is the broadcastable shape of all input arguments. Use matrix multiplication to apply to EPG state matrix.
     """
     fa, phase = torch.broadcast_tensors(deg2rad(flip_angle), deg2rad(phase_angle))
 
@@ -379,16 +425,24 @@ def relaxation_operator(
         T2: Numeric = torch.inf,
         M0: Numeric = 1.0
         ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Operator for decaying and restoring magnetization due to relaxation.
+    """
+    Operator for decaying and restoring magnetization due to relaxation.
 
-    Args:
-        dt (Numeric): array of time step in seconds.
-        T1 (Numeric, optional): array of T1 relaxation times. Defaults to inf.
-        T2 (Numeric, optional): array of T2 relaxation times. Defaults to inf.
-        M0 (Numeric, optional): array of equilibrium magnetization. Defaults to 1.0.
+    Parameters
+    ----------
+    dt : Numeric
+        Array of time step in seconds.
+    T1 : Numeric, optional
+        Array of T1 relaxation times. Defaults to inf.
+    T2 : Numeric, optional
+        Array of T2 relaxation times. Defaults to inf.
+    M0 : Numeric, optional
+        Array of equilibrium magnetization. Defaults to 1.0.
 
-    Returns:
-        (Erelax, Erecover) Tuple[torch.Tensor, torch.Tensor]: Each entry has shape (..., 3), where ... is the broadcastable shape across all input arguments, and the entries along the final dimension are the elements of the diagonal operators for relaxation and recovery.
+    Returns
+    -------
+    tuple of torch.Tensor
+        (Erelax, Erecover): Each entry has shape (..., 3), where ... is the broadcastable shape across all input arguments, and the entries along the final dimension are the elements of the diagonal operators for relaxation and recovery.
     """
 
     dt_b, T1_b, T2_b, M0_b = torch.broadcast_tensors(
@@ -410,16 +464,52 @@ def relaxation_operator(
     return Erelax, Erecover
 
 def totensor(x: NumSeq) -> torch.Tensor:
-    """Convert input to tensor."""
+    """
+    Convert input to tensor.
+
+    Parameters
+    ----------
+    x : NumSeq
+        Input value(s) to convert.
+
+    Returns
+    -------
+    torch.Tensor
+        Converted tensor.
+    """
     if torch.is_tensor(x):
         return x # type: ignore
     else:
         return torch.tensor(x)
 
 def deg2rad(deg: NumSeq) -> torch.Tensor:
-    """Convert degrees to radians."""
+    """
+    Convert degrees to radians.
+
+    Parameters
+    ----------
+    deg : NumSeq
+        Angle in degrees.
+
+    Returns
+    -------
+    torch.Tensor
+        Angle in radians.
+    """
     return totensor(deg) * torch.pi / 180.0
 
 def rad2deg(rad: NumSeq) -> torch.Tensor:
-    """Convert radians to degrees."""
+    """
+    Convert radians to degrees.
+
+    Parameters
+    ----------
+    rad : NumSeq
+        Angle in radians.
+
+    Returns
+    -------
+    torch.Tensor
+        Angle in degrees.
+    """
     return totensor(rad) * 180.0 / torch.pi
