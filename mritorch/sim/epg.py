@@ -129,7 +129,7 @@ def simulate_events(
     dephase_steps : NumSeq, optional
         Sequence of epg dephasing steps with length `num_steps`. Defaults to 1.
     save_steps : NumSeq, optional
-        Sequence defining whether or not to save out the final state data for each `num_steps`. Defaults to 1.
+        Sequence or scalar indicating at which steps to save the EPG state to the output. Each entry is interpreted as a boolean: if 1, the state after that step is saved; if 0, it is not saved. The output will only contain the states for the steps where `save_steps` is 1. Defaults to 1 (save every step).
     num_steps : int or None, optional
         Number of steps to simulate. If None, inferred from the length of sequence parameters.
     B1 : Numeric, optional
@@ -148,7 +148,7 @@ def simulate_events(
     Returns
     -------
     torch.Tensor or tuple of torch.Tensor
-        Simulated EPG states. The output format depends on `state_representation`.
+        Simulated EPG states. The output format depends on `state_representation`. For 'matrix' representation, the output is a (..., 3, K) tensor of EPG states. For 'vector' representation, the output is a tuple of (..., 2*K-1) and (..., K) tensors of F+/- and Z states, respectively.
 
     Notes
     -----
