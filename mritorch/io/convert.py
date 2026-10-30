@@ -8,8 +8,9 @@ The converter's default stylesheet copies every ``sWipMemBlock.alFree[i]`` and
 mapVBVD's ``alFree{n}`` corresponds to ``alFree[n-1]``. Check this against a
 real file: XProtocol drops unset entries, which can shift the numbering.
 
-Set ``MRITORCH_SIEMENS_TO_ISMRMRD`` to the converter path if it is not on
-``PATH``.
+The converter is installed from the `ismrmrd` conda channel by the
+repository's ``environment.yml``. Set ``MRITORCH_SIEMENS_TO_ISMRMRD`` to the
+converter path if it is not on ``PATH``.
 """
 from __future__ import annotations
 from typing import Optional, Sequence
@@ -25,8 +26,9 @@ def find_converter() -> str:
     exe = os.environ.get("MRITORCH_SIEMENS_TO_ISMRMRD") or shutil.which("siemens_to_ismrmrd")
     if not exe:
         raise FileNotFoundError(
-            "siemens_to_ismrmrd not found. Build it (Resources/Code/siemens_to_ismrmrd) "
-            "and put it on PATH or set MRITORCH_SIEMENS_TO_ISMRMRD.")
+            "siemens_to_ismrmrd not found. Create the conda environment from "
+            "environment.yml (or `conda install -c conda-forge -c ismrmrd "
+            "siemens_to_ismrmrd`), or set MRITORCH_SIEMENS_TO_ISMRMRD to its path.")
     return exe
 
 
@@ -68,9 +70,9 @@ def siemens_to_ismrmrd(
     cmd = [find_converter(), "-f", str(dat_file), "-o", str(output),
            "-z", str(measurement), "-g", group]
     if user_stylesheet is not None:
-        cmd += ["--user-stylesheet", str(user_stylesheet)]
+        cmd += ["-x", str(user_stylesheet)]
     if user_map is not None:
-        cmd += ["--user-map", str(user_map)]
+        cmd += ["-m", str(user_map)]
     cmd += list(extra_args)
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

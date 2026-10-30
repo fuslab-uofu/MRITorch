@@ -1,0 +1,18 @@
+# Conda environment for MRITorch, including the siemens_to_ismrmrd converter
+# (a C++ tool that pip cannot install).
+#
+#   conda env create -f environment.yml
+#   conda activate mritorch
+name: mritorch
+channels:
+  - conda-forge
+  - ismrmrd
+dependencies:
+  - python=3.11
+  - pip
+  - ismrmrd::siemens_to_ismrmrd>=1.2.13
+  # siemens_to_ismrmrd 1.2.13 links libismrmrd.so.1.14 but only requires
+  # ismrmrd>=1.14.2, so pin the C++ library or the converter fails to load
+  - ismrmrd::ismrmrd=1.14.*
+  - pip:
+    - -e .[io,nufft,dev]
