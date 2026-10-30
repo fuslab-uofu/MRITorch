@@ -79,12 +79,15 @@ def make_header(
         flip_angle: Sequence[float]=(),
         user_long: Optional[dict[str, int]]=None,
         user_double: Optional[dict[str, float]]=None,
+        larmor_frequency_hz: int=123_250_000,
         ):
     """
     Build a single-encoding `ismrmrd.xsd.ismrmrdHeader`.
 
     Used for synthetic data and for converters that write ISMRMRD from other
-    formats. Matrix sizes and FOVs are (x, y, z); times are in ms.
+    formats. Matrix sizes and FOVs are (x, y, z); times are in ms. The
+    required `experimentalConditions` element is filled from
+    `larmor_frequency_hz` (default: a 2.89 T Siemens "3 T" system).
     """
     import ismrmrd.xsd as x
 
@@ -111,6 +114,8 @@ def make_header(
                 kspace_encoding_step_1=limit(encoded_matrix[1], center_ky),
                 kspace_encoding_step_2=limit(encoded_matrix[2], center_kz)),
             trajectory=x.trajectoryType(trajectory))],
+        experimentalConditions=x.experimentalConditionsType(
+            H1resonanceFrequency_Hz=int(larmor_frequency_hz)),
         sequenceParameters=seq, userParameters=user)
 
 
