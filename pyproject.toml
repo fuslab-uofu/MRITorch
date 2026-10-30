@@ -6,7 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "mritorch"
 version = "0.0.1"
 dependencies = [
-  "torch >= 2.0.0"
+  "torch >= 2.0.0",
+  "numpy",
 ]
 authors = [
   { name="Samuel I. Adams-Tew", email="samuel.adams@utah.edu" },
@@ -24,3 +25,8 @@ license-files = ["LICEN[CS]E*"]
 
 [project.urls]
 Homepage = "https://github.com/fuslab-uofu/MRITorch"
+
+[project.optional-dependencies]
+io = ["ismrmrd >= 1.14", "h5py", "scipy", "nibabel", "pydicom"]
+nufft = ["torchkbnufft"]
+dev = ["pytest"]
