@@ -100,6 +100,18 @@ class TestCartesian(unittest.TestCase):
         self.assertEqual(im.geometry.matrix, (64, 64, 1))
         self.assertEqual(im.geometry.resolution[:2], (200.0 / 64, 200.0 / 64))
 
+    def test_espirit_combine_matches_sos_without_noise_bias(self):
+        ks, truth, truth_sos, _ = _synthetic(n_echo=2, noise_std=1e-3)
+        im = reconstruct_cartesian(ks, combine="espirit", espirit=dict(calib_size=16, kernel_size=4)).squeeze()
+        self.assertEqual(im.dims, ("contrast", "z", "y", "x"))
+        self.assertEqual(tuple(im.data.shape), (2, 1, NY, NX))
+        mask = (abs(truth) > 0) & (truth_sos > 0.5 * truth_sos.max())
+        ratio = abs(im.data[0, 0])[mask] / truth_sos[mask]
+        self.assertLess(float((ratio - 1).abs().median()), 0.03)
+        # the same maps are applied to both echoes: the echo phase difference is preserved
+        dphi = torch.angle(im.data[1, 0] * im.data[0, 0].conj())[mask]
+        self.assertTrue(torch.allclose(dphi, torch.tensor(0.5), atol=0.03))
+
     def test_no_coil_combine(self):
         ks, _, _, _ = _synthetic()
         im = reconstruct_cartesian(ks, combine="none").squeeze()
