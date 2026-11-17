@@ -15,6 +15,18 @@ try:
 except ImportError:
     HAS_IO = False
 
+try:
+    import nibabel  # noqa: F401
+    HAS_NIBABEL = True
+except ImportError:
+    HAS_NIBABEL = False
+
+try:
+    import scipy  # noqa: F401
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
 if HAS_IO:
     from mritorch.io import (read_kspace, write_kspace, read_image, write_image, make_header,
                              encoding_info, sequence_parameters, user_parameters, to_nifti, load_mat)
@@ -89,6 +101,7 @@ class TestIO(unittest.TestCase):
         self.assertEqual(out.slice_geometry[1], _geom(5.0))
         self.assertEqual(out.squeeze().dims, ("slice", "contrast", "z", "y", "x"))
 
+    @unittest.skipUnless(HAS_NIBABEL, "requires nibabel")
     def test_nifti(self):
         import nibabel as nib
         img = Image(data=torch.rand(3, 8, 10), geometry=_geom(), dims=("z", "y", "x"))
@@ -101,6 +114,7 @@ class TestIO(unittest.TestCase):
         self.assertTrue(np.allclose(nii.get_fdata()[:, :, 1], img.data[1].numpy().T))
         self.assertTrue(np.allclose(nii.affine[:3, 3], [-img.affine[0, 3], -img.affine[1, 3], img.affine[2, 3]]))
 
+    @unittest.skipUnless(HAS_SCIPY, "requires scipy")
     def test_load_mat_v5(self):
         from scipy.io import savemat
         path = os.path.join(self.tmp.name, "t.mat")

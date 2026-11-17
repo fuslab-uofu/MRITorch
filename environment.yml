@@ -1,18 +1,19 @@
-# Conda environment for MRITorch, including the siemens_to_ismrmrd converter
-# (a C++ tool that pip cannot install).
+# Optional: the siemens_to_ismrmrd converter (Siemens twix .dat -> ISMRMRD),
+# a C++ tool that pip cannot install. MRITorch itself is installed with pip;
+# it only calls this converter as a subprocess.
 #
-#   conda env create -f environment.yml
-#   conda activate mritorch
-name: mritorch
+#   conda env create -f environment.yml              # env named siemens2ismrmrd
+#   conda env create -f environment.yml -n <name>    # or choose your own name
+#
+# Then point MRITorch at the converter (or put it on PATH):
+#
+#   export MRITORCH_SIEMENS_TO_ISMRMRD="$(conda run -n siemens2ismrmrd which siemens_to_ismrmrd)"
+name: siemens2ismrmrd
 channels:
   - conda-forge
   - ismrmrd
 dependencies:
-  - python=3.11
-  - pip
   - ismrmrd::siemens_to_ismrmrd>=1.2.13
   # siemens_to_ismrmrd 1.2.13 links libismrmrd.so.1.14 but only requires
   # ismrmrd>=1.14.2, so pin the C++ library or the converter fails to load
   - ismrmrd::ismrmrd=1.14.*
-  - pip:
-    - -e .[io,nufft,dev]
