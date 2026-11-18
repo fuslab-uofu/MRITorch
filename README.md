@@ -25,7 +25,8 @@ reconstruction, EPG simulation) works on plain tensors with no extras.
 
 **Intel Macs:** PyTorch 2.2.2 is the last release for macOS on x86_64, and it
 does not work with NumPy 2. MRITorch's metadata restricts NumPy to `<2` on
-that platform, so pip resolves a working combination automatically.
+that platform, so pip resolves a working combination automatically. On all
+other platforms MRITorch requires PyTorch 2.3 or newer, which works with NumPy 2.
 
 ### Radial reconstruction
 

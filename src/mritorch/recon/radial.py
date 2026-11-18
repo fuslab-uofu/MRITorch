@@ -45,7 +45,8 @@ class Nufft2d:
       the device of its input, in the input's precision (complex64 or complex128). Relative error against
       ``'direct'`` is about 1e-5 with the defaults ``numpoints=6, oversamp=2.0``. CPU threads follow
       `torch.set_num_threads`. GPU use is untested.
-    - ``'direct'``: evaluates the sums densely in complex128 (tests, small problems).
+    - ``'direct'``: evaluates the sums densely in complex128 (tests, small problems). It keeps two complex128
+      phase tables of ``n_points * (N1 + N2)`` entries per direction for the object's lifetime.
 
     Outputs are complex in the precision of the input: complex64 for float32/complex64 input, complex128 for
     float64/complex128 input.
@@ -78,6 +79,9 @@ class Nufft2d:
         # phase argument in radians: 2 pi k / N
         self.omega = torch.stack([2 * math.pi * self.traj[0] / self.shape[0], 2 * math.pi * self.traj[1] / self.shape[1]])
         self._kb_cache: dict = {}
+        self._direct_cache: dict = {}
+        # geometry of a calibration operator, set by `calibration_nufft` and checked by `calibration_maps`
+        self.calibration_key: Optional[tuple] = None
 
     def _kb(self, dtype: torch.dtype, device: torch.device):
         """``(forward op, adjoint op, omega, interp_mats)`` for a complex dtype and device, built on first use."""
@@ -98,11 +102,14 @@ class Nufft2d:
         return math.sqrt(math.prod(self.grid_size) / math.prod(self.shape))
 
     def _direct_phases(self, sign: int):
-        n1 = torch.arange(self.shape[0], dtype=torch.float64) - self.shape[0] // 2
-        n2 = torch.arange(self.shape[1], dtype=torch.float64) - self.shape[1] // 2
-        e1 = torch.exp(sign * 1j * self.omega[0][:, None] * n1[None])     # (pts, N1)
-        e2 = torch.exp(sign * 1j * self.omega[1][:, None] * n2[None])     # (pts, N2)
-        return e1, e2
+        """``exp(sign i omega n)`` tables ``(pts, N1)`` and ``(pts, N2)``, computed once per sign."""
+        if sign not in self._direct_cache:
+            n1 = torch.arange(self.shape[0], dtype=torch.float64) - self.shape[0] // 2
+            n2 = torch.arange(self.shape[1], dtype=torch.float64) - self.shape[1] // 2
+            e1 = torch.exp(sign * 1j * self.omega[0][:, None] * n1[None])
+            e2 = torch.exp(sign * 1j * self.omega[1][:, None] * n2[None])
+            self._direct_cache[sign] = (e1, e2)
+        return self._direct_cache[sign]
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
         lead = img.shape[:-2]
@@ -146,6 +153,11 @@ def _calibration_geometry(n_samp: int, n_view: int, angle_increment: float, shap
     return traj, inside, n_cal
 
 
+def _calibration_key(n_samp, n_view, angle_increment, shape, calib_reduction, os_factor) -> tuple:
+    return (int(n_samp), int(n_view), float(angle_increment), tuple(int(n) for n in shape), int(calib_reduction),
+            int(os_factor))
+
+
 def calibration_nufft(
         n_samp: int,
         n_view: int,
@@ -162,7 +174,9 @@ def calibration_nufft(
     Arguments are those of `calibration_maps` (and ``n_samp, n_view`` of its ``k_calib``).
     """
     traj, inside, n_cal = _calibration_geometry(n_samp, n_view, angle_increment, shape, calib_reduction, os_factor)
-    return Nufft2d(traj[:, inside], n_cal, backend=backend, numpoints=numpoints, oversamp=oversamp)
+    op = Nufft2d(traj[:, inside], n_cal, backend=backend, numpoints=numpoints, oversamp=oversamp)
+    op.calibration_key = _calibration_key(n_samp, n_view, angle_increment, shape, calib_reduction, os_factor)
+    return op
 
 
 def calibration_maps(
@@ -172,9 +186,9 @@ def calibration_maps(
         calib_reduction: int=4,
         os_factor: int=2,
         espirit: Optional[dict]=None,
-        backend: str="kb",
-        numpoints: int=6,
-        oversamp: float=2.0,
+        backend: Optional[str]=None,
+        numpoints: Optional[int]=None,
+        oversamp: Optional[float]=None,
         nufft: Optional[Nufft2d]=None,
         ) -> torch.Tensor:
     """
@@ -191,10 +205,11 @@ def calibration_maps(
     os_factor : int
         Oversampling of the samples along each spoke (Fourier interpolation) before gridding.
     backend, numpoints, oversamp
-        `Nufft2d` settings of the calibration NUFFT (ignored if ``nufft`` is given).
+        `Nufft2d` settings of the calibration NUFFT; ``None`` means the `calibration_nufft` defaults
+        (``'kb'``, 6, 2.0). Must not be given together with ``nufft``.
     nufft : Nufft2d, optional
-        Prebuilt calibration operator from `calibration_nufft` with the same geometry, to avoid rebuilding it for
-        every plane.
+        Prebuilt operator from `calibration_nufft`, called with the same geometry arguments, to avoid rebuilding it
+        for every plane. Its own NUFFT settings are used.
 
     Returns
     -------
@@ -203,19 +218,24 @@ def calibration_maps(
     """
     n_samp, n_view, n_coil = k_calib.shape
     traj, inside, n_cal = _calibration_geometry(n_samp, n_view, angle_increment, shape, calib_reduction, os_factor)
+    settings = {k: v for k, v in dict(backend=backend, numpoints=numpoints, oversamp=oversamp).items()
+                if v is not None}
     if nufft is None:
-        nufft = Nufft2d(traj[:, inside], n_cal, backend=backend, numpoints=numpoints, oversamp=oversamp)
-    elif (nufft.shape != n_cal or nufft.n_points != int(inside.sum())
-          or not torch.allclose(nufft.traj, traj[:, inside])):
-        raise ValueError(f"nufft (shape {nufft.shape}, {nufft.n_points} points) does not match this calibration "
-                         f"(shape {n_cal}, {int(inside.sum())} points, or a different trajectory); build it with "
-                         f"calibration_nufft and the same arguments")
+        nufft = calibration_nufft(n_samp, n_view, angle_increment, shape, calib_reduction, os_factor, **settings)
+    else:
+        if settings:
+            raise ValueError(f"pass either nufft or NUFFT settings, not both (got {sorted(settings)})")
+        key = _calibration_key(n_samp, n_view, angle_increment, shape, calib_reduction, os_factor)
+        if getattr(nufft, "calibration_key", None) != key:
+            raise ValueError("nufft does not match this calibration geometry; build it with calibration_nufft and "
+                             "the same n_samp, n_view, angle_increment, shape, calib_reduction and os_factor")
     # Fourier interpolation of the samples along each spoke (zero-fill in the projection domain)
     k = k_calib.movedim(0, -1)                                            # (view, coil, samp)
     k = fftc(k, dim=-1, norm="forward")
     k = resize_center(k, (n_samp * os_factor,))
     k = ifftc(k, dim=-1, norm="forward").movedim(-1, 0)                   # (samp*os, view, coil)
-    k = k * (torch.sqrt((traj ** 2).sum(0)) / (n_samp / 2))[..., None]          # ramp density compensation
+    ramp = (torch.sqrt((traj ** 2).sum(0)) / (n_samp / 2)).to(k.real.dtype)  # ramp density compensation, in k's precision
+    k = k * ramp[..., None]
     img = nufft.adjoint(k[inside].T.contiguous())                         # (coil, n1, n2)
     k_lr = fftc(img, dim=(-2, -1), norm="ortho")
     k_zfi = pad_to_size(k_lr, tuple(shape))

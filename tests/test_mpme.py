@@ -7,7 +7,7 @@ import torch
 
 from mritorch.io.mpme import MpmeKSpace, _pathways_from_header
 import mritorch.recon.radial as radial
-from mritorch.recon.radial import Nufft2d, calibration_maps, radial_trajectory, reconstruct_mpme
+from mritorch.recon.radial import Nufft2d, calibration_nufft, radial_trajectory, reconstruct_mpme
 
 N, N_VIEW, N_COIL = 16, 40, 4
 
@@ -62,7 +62,7 @@ class TestMpme(unittest.TestCase):
 
     def test_reconstruct_mpme_default_backend(self):
         """Same problem through the default (torchkbnufft) backend, with no backend argument."""
-        for fn in (reconstruct_mpme, calibration_maps):
+        for fn in (reconstruct_mpme, calibration_nufft, Nufft2d):
             self.assertEqual(inspect.signature(fn).parameters["backend"].default, "kb", fn.__name__)
         mk, truth = _synthetic()
         rec = reconstruct_mpme(mk, shape=(N, N), reg=1e-4, n_iter=40,

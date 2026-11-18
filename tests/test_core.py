@@ -7,11 +7,6 @@ from mritorch.fft import fftc, ifftc
 from mritorch.utils.array import resize_center, pad_to_size, crop_to_size, zfi_to_size
 from mritorch import filters
 
-try:
-    import scipy  # noqa: F401
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
 
 _atol = 1e-5
 
@@ -76,7 +71,6 @@ class TestArray(unittest.TestCase):
 
 
 class TestFilters(unittest.TestCase):
-    @unittest.skipUnless(HAS_SCIPY, "requires scipy")
     def test_tukey_matches_scipy(self):
         from scipy.signal.windows import tukey
         for n in (16, 17, 64):
@@ -84,7 +78,6 @@ class TestFilters(unittest.TestCase):
                 w = filters.tukey(n, r, dtype=torch.float64).numpy()
                 self.assertTrue(np.allclose(w, tukey(n, r)), f"n={n}, r={r}")
 
-    @unittest.skipUnless(HAS_SCIPY, "requires scipy")
     def test_hann_matches_scipy(self):
         from scipy.signal.windows import hann
         self.assertTrue(np.allclose(filters.hann(15, dtype=torch.float64).numpy(), hann(15)))

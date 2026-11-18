@@ -21,11 +21,6 @@ try:
 except ImportError:
     HAS_NIBABEL = False
 
-try:
-    import scipy  # noqa: F401
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
 
 if HAS_IO:
     from mritorch.io import (read_kspace, write_kspace, read_image, write_image, make_header,
@@ -114,7 +109,6 @@ class TestIO(unittest.TestCase):
         self.assertTrue(np.allclose(nii.get_fdata()[:, :, 1], img.data[1].numpy().T))
         self.assertTrue(np.allclose(nii.affine[:3, 3], [-img.affine[0, 3], -img.affine[1, 3], img.affine[2, 3]]))
 
-    @unittest.skipUnless(HAS_SCIPY, "requires scipy")
     def test_load_mat_v5(self):
         from scipy.io import savemat
         path = os.path.join(self.tmp.name, "t.mat")

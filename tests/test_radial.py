@@ -1,5 +1,6 @@
 import math
 import unittest
+from unittest import mock
 
 import pytest
 import torch
@@ -7,7 +8,9 @@ import torch
 from mritorch.fft import fftc
 from mritorch.recon.radial import Nufft2d, radial_trajectory, sense_cg, calibration_maps, calibration_nufft
 
-KB_TOL = 1e-4   # max relative error of backend="kb" against "direct" (measured ~1e-5, plan step B1)
+# Max relative error of backend="kb" (numpoints=6, oversamp=2.0, sparse interpolation) against "direct" on these
+# radial trajectories; measured ~1e-5 for complex64 and complex128 with torchkbnufft 1.5.1.
+KB_TOL = 1e-4
 
 
 def _phantom(n=24, n_coil=6):
@@ -63,6 +66,14 @@ class TestNufft(unittest.TestCase):
             self.assertEqual(y.dtype, torch.complex64, backend)
             self.assertLess(_relerr(y, nu.forward(x.to(torch.complex64))), 1e-6, backend)
             self.assertEqual(nu.adjoint(y.real.double()).dtype, torch.complex128, backend)
+
+    def test_direct_phase_tables_are_cached(self):
+        nu = Nufft2d(radial_trajectory(8, 5, 111.246), (8, 8), backend="direct")
+        x = torch.randn(8, 8, dtype=torch.complex128)
+        a, b = nu.forward(x), nu.adjoint(nu.forward(x))
+        with mock.patch.object(torch, "exp", side_effect=AssertionError("phases recomputed")):
+            self.assertTrue(torch.equal(nu.forward(x), a))
+            self.assertTrue(torch.equal(nu.adjoint(a), b))
 
     def test_kb_is_default_backend(self):
         self.assertEqual(Nufft2d(radial_trajectory(8, 3, 111.246), (8, 8)).backend, "kb")
@@ -199,6 +210,21 @@ class TestCalibration(unittest.TestCase):
         other_angle = calibration_nufft(n, 80, 90.0, (n, n), calib_reduction=2)
         with self.assertRaises(ValueError):
             calibration_maps(y, 111.246, (n, n), nufft=other_angle, **kw)
+        # an operator not made by calibration_nufft carries no geometry and is rejected
+        with self.assertRaises(ValueError):
+            calibration_maps(y, 111.246, (n, n), nufft=Nufft2d(op.traj, op.shape), **kw)
+        # NUFFT settings conflict with a prebuilt operator
+        for bad in (dict(backend="direct"), dict(numpoints=4), dict(oversamp=1.5)):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                calibration_maps(y, 111.246, (n, n), nufft=op, **kw, **bad)
+
+    def test_single_precision_is_kept(self):
+        """complex64 calibration data gives complex64 maps (no promotion through float64 density weights)."""
+        obj, sens = _phantom(n=24, n_coil=4)
+        nu = Nufft2d(radial_trajectory(24, 40, 111.246), (24, 24), backend="direct")
+        y = nu.forward(sens * obj).reshape(4, 24, 40).permute(1, 2, 0).to(torch.complex64)
+        maps = calibration_maps(y, 111.246, (24, 24), calib_reduction=2, espirit=dict(calib_size=8, kernel_size=3))
+        self.assertEqual(maps.dtype, torch.complex64)
 
 
 if __name__ == "__main__":
