@@ -1,16 +1,13 @@
 import math
 import unittest
 
+import pytest
 import torch
 
 from mritorch.fft import fftc
-from mritorch.recon.radial import Nufft2d, radial_trajectory, sense_cg, calibration_maps
+from mritorch.recon.radial import Nufft2d, radial_trajectory, sense_cg, calibration_maps, calibration_nufft
 
-try:
-    import finufft  # noqa: F401
-    HAS_FINUFFT = True
-except ImportError:
-    HAS_FINUFFT = False
+KB_TOL = 1e-4   # max relative error of backend="kb" against "direct" (measured ~1e-5, plan step B1)
 
 
 def _phantom(n=24, n_coil=6):
@@ -57,15 +54,85 @@ class TestNufft(unittest.TestCase):
         rhs = torch.sum(x.conj() * nu.adjoint(y))
         self.assertAlmostEqual(float(lhs.real), float(rhs.real), delta=1e-3 * abs(float(lhs.real)) + 1e-4)
 
-    @unittest.skipUnless(HAS_FINUFFT, "requires finufft")
-    def test_finufft_matches_direct(self):
-        traj = radial_trajectory(32, 20, 111.246)
-        a = Nufft2d(traj, (32, 32), backend="direct")
-        b = Nufft2d(traj, (32, 32), backend="finufft", eps=1e-9)
-        x = torch.randn(2, 32, 32, dtype=torch.cfloat)
-        y = torch.randn(2, a.n_points, dtype=torch.cfloat)
-        self.assertLess(float((a.forward(x) - b.forward(x)).abs().max() / a.forward(x).abs().max()), 1e-5)
-        self.assertLess(float((a.adjoint(y) - b.adjoint(y)).abs().max() / a.adjoint(y).abs().max()), 1e-5)
+    def test_real_input_gives_complex_output(self):
+        traj = radial_trajectory(8, 5, 111.246)
+        x = torch.randn(2, 8, 8, dtype=torch.float32)
+        for backend in ("direct", "kb"):
+            nu = Nufft2d(traj, (8, 8), backend=backend)
+            y = nu.forward(x)
+            self.assertEqual(y.dtype, torch.complex64, backend)
+            self.assertLess(_relerr(y, nu.forward(x.to(torch.complex64))), 1e-6, backend)
+            self.assertEqual(nu.adjoint(y.real.double()).dtype, torch.complex128, backend)
+
+    def test_kb_is_default_backend(self):
+        self.assertEqual(Nufft2d(radial_trajectory(8, 3, 111.246), (8, 8)).backend, "kb")
+
+
+def _relerr(a, b):
+    return float((a - b).abs().max() / b.abs().max())
+
+
+class TestKbNufft(unittest.TestCase):
+    """backend="kb" (torchkbnufft) against the exact dense sums of backend="direct"."""
+
+    CASES = [((16, 16), (16, 9)), ((32, 32), (32, 20)), ((40, 40), (40, 80)), ((24, 20), (24, 30))]
+
+    def _check_matches_direct(self, dtype):
+        torch.manual_seed(0)
+        for shape, (n_samp, n_view) in self.CASES:
+            traj = radial_trajectory(n_samp, n_view, 111.246)
+            ref = Nufft2d(traj, shape, backend="direct")
+            kb = Nufft2d(traj, shape, backend="kb")
+            x = torch.randn(2, 3, *shape, dtype=torch.complex128)
+            y = torch.randn(2, 3, ref.n_points, dtype=torch.complex128)
+            fk, ak = kb.forward(x.to(dtype)), kb.adjoint(y.to(dtype))
+            self.assertEqual(fk.dtype, dtype)
+            self.assertEqual(ak.dtype, dtype)
+            self.assertEqual(tuple(fk.shape), (2, 3, ref.n_points))
+            self.assertEqual(tuple(ak.shape), (2, 3, *shape))
+            self.assertLess(_relerr(fk.to(torch.complex128), ref.forward(x)), KB_TOL, (shape, dtype))
+            self.assertLess(_relerr(ak.to(torch.complex128), ref.adjoint(y)), KB_TOL, (shape, dtype))
+
+    def test_matches_direct_complex64(self):
+        self._check_matches_direct(torch.complex64)
+
+    def test_matches_direct_complex128(self):
+        self._check_matches_direct(torch.complex128)
+
+    def test_adjointness(self):
+        traj = radial_trajectory(16, 9, 111.246)
+        nu = Nufft2d(traj, (16, 16), backend="kb")
+        x = torch.randn(2, 16, 16, dtype=torch.complex128)
+        y = torch.randn(2, nu.n_points, dtype=torch.complex128)
+        lhs = torch.sum(nu.forward(x).conj() * y)
+        rhs = torch.sum(x.conj() * nu.adjoint(y))
+        self.assertLess(abs(complex(lhs - rhs)), 1e-10 * abs(complex(lhs)))
+
+    def test_gradcheck(self):
+        traj = radial_trajectory(8, 5, 111.246)
+        nu = Nufft2d(traj, (8, 8), backend="kb")
+        x = torch.randn(2, 8, 8, dtype=torch.complex128, requires_grad=True)
+        y = torch.randn(2, nu.n_points, dtype=torch.complex128, requires_grad=True)
+        self.assertTrue(torch.autograd.gradcheck(nu.forward, (x,)))
+        self.assertTrue(torch.autograd.gradcheck(nu.adjoint, (y,)))
+
+    def _check_device(self, device):
+        traj = radial_trajectory(16, 9, 111.246)
+        nu = Nufft2d(traj, (16, 16), backend="kb")
+        x = torch.randn(2, 16, 16, dtype=torch.complex64, device=device)
+        y = nu.forward(x)
+        self.assertEqual(y.device, x.device)
+        self.assertEqual(nu.adjoint(y).device, x.device)
+        ref = Nufft2d(traj, (16, 16), backend="direct").forward(x.cpu().to(torch.complex128))
+        self.assertLess(_relerr(y.cpu().to(torch.complex128), ref), KB_TOL)
+
+    def test_cpu_device(self):
+        self._check_device(torch.device("cpu"))
+
+    @pytest.mark.gpu
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA not available")
+    def test_cuda_device(self):
+        self._check_device(torch.device("cuda"))
 
 
 class TestSenseCg(unittest.TestCase):
@@ -116,6 +183,22 @@ class TestCalibration(unittest.TestCase):
         comb = (maps.conj() * (sens * obj)).sum(0).abs()
         m = inside & (obj.abs() > 0.3)
         self.assertLess(float(((comb - obj.abs()).abs() / obj.abs())[m].median()), 0.15)
+
+    def test_prebuilt_calibration_operator(self):
+        obj, sens = _phantom(n=40, n_coil=6)
+        n = 40
+        nu = Nufft2d(radial_trajectory(n, 80, 111.246), (n, n), backend="direct")
+        y = nu.forward(sens * obj).reshape(6, n, 80).permute(1, 2, 0)
+        kw = dict(calib_reduction=2, espirit=dict(calib_size=12, kernel_size=4))
+        ref = calibration_maps(y, 111.246, (n, n), **kw)
+        op = calibration_nufft(n, 80, 111.246, (n, n), calib_reduction=2)
+        self.assertTrue(torch.allclose(calibration_maps(y, 111.246, (n, n), nufft=op, **kw), ref, atol=1e-5))
+        wrong = calibration_nufft(n, 80, 111.246, (n, n), calib_reduction=4)
+        with self.assertRaises(ValueError):
+            calibration_maps(y, 111.246, (n, n), nufft=wrong, **kw)
+        other_angle = calibration_nufft(n, 80, 90.0, (n, n), calib_reduction=2)
+        with self.assertRaises(ValueError):
+            calibration_maps(y, 111.246, (n, n), nufft=other_angle, **kw)
 
 
 if __name__ == "__main__":

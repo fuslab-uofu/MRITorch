@@ -4,8 +4,8 @@ A physics-informed PyTorch library for quantitative MRI.
 
 ## Installation
 
-MRITorch requires Python 3.11 or newer. The core library needs only PyTorch
-and NumPy:
+MRITorch requires Python 3.11 or newer. The core library needs PyTorch, NumPy
+and [torchkbnufft](https://torchkbnufft.readthedocs.io) (which brings SciPy):
 
 ```bash
 pip install mritorch
@@ -18,15 +18,25 @@ Optional features are installed as extras, e.g. `pip install "mritorch[ismrmrd,n
 | `ismrmrd` | Reading and writing ISMRMRD HDF5 k-space and images (`mritorch.io`) | ismrmrd, h5py |
 | `nifti`   | NIfTI export (`mritorch.io.to_nifti`)                    | nibabel           |
 | `mat`     | MATLAB `.mat` loading (`mritorch.io.load_mat`)            | scipy, h5py       |
-| `nufft`   | The `finufft` backend of the radial reconstruction        | finufft           |
 | `all`     | All of the above                                          |                   |
 
-Everything else (FFTs, coil combination, ESPIRiT/SENSE, Cartesian
+Everything else (FFTs, coil combination, ESPIRiT/SENSE, Cartesian and radial
 reconstruction, EPG simulation) works on plain tensors with no extras.
 
 **Intel Macs:** PyTorch 2.2.2 is the last release for macOS on x86_64, and it
 does not work with NumPy 2. MRITorch's metadata restricts NumPy to `<2` on
 that platform, so pip resolves a working combination automatically.
+
+### Radial reconstruction
+
+The radial NUFFT (`mritorch.recon.radial.Nufft2d`) uses torchkbnufft by
+default (`backend="kb"`), so it is differentiable with autograd and runs on the
+device of its input. Accuracy is set by `numpoints` (kernel width, default 6)
+and `oversamp` (grid oversampling, default 2.0); the defaults agree with the
+exact `backend="direct"` sums to a relative error of about 1e-5.
+`reconstruct_mpme` and `calibration_maps` accept the same `backend`,
+`numpoints` and `oversamp` arguments. CPU
+parallelism follows `torch.set_num_threads`. GPU use has not been tested yet.
 
 ### Siemens raw data (optional)
 

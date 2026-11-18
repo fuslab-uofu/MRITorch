@@ -1,10 +1,13 @@
+import inspect
 import math
 import unittest
+from unittest import mock
 
 import torch
 
 from mritorch.io.mpme import MpmeKSpace, _pathways_from_header
-from mritorch.recon.radial import Nufft2d, radial_trajectory, reconstruct_mpme
+import mritorch.recon.radial as radial
+from mritorch.recon.radial import Nufft2d, calibration_maps, radial_trajectory, reconstruct_mpme
 
 N, N_VIEW, N_COIL = 16, 40, 4
 
@@ -56,6 +59,31 @@ class TestMpme(unittest.TestCase):
                     # compare magnitudes (each plane has an arbitrary global phase)
                     r = rec[xi, :, :, p, e].abs()[m] / truth[xi, :, :, p, e].abs()[m]
                     self.assertLess(float((r - 1).abs().median()), 0.1, (xi, p, e))
+
+    def test_reconstruct_mpme_default_backend(self):
+        """Same problem through the default (torchkbnufft) backend, with no backend argument."""
+        for fn in (reconstruct_mpme, calibration_maps):
+            self.assertEqual(inspect.signature(fn).parameters["backend"].default, "kb", fn.__name__)
+        mk, truth = _synthetic()
+        rec = reconstruct_mpme(mk, shape=(N, N), reg=1e-4, n_iter=40,
+                               espirit=dict(calib_size=8, kernel_size=3), calib_reduction=1)
+        self.assertEqual(tuple(rec.shape), (2, N, N, 3, 2))
+        for xi in range(2):
+            m = truth[xi, :, :, 0, 0].abs() > 0
+            for p in range(3):
+                for e in range(2):
+                    r = rec[xi, :, :, p, e].abs()[m] / truth[xi, :, :, p, e].abs()[m]
+                    self.assertLess(float((r - 1).abs().median()), 0.1, (xi, p, e))
+
+    def test_operators_built_once_with_nufft_settings(self):
+        """One SENSE and one calibration NUFFT for all planes, both with the requested numpoints/oversamp."""
+        mk, _ = _synthetic()
+        with mock.patch.object(radial, "Nufft2d", wraps=radial.Nufft2d) as spy:
+            reconstruct_mpme(mk, shape=(N, N), n_iter=2, espirit=dict(calib_size=8, kernel_size=3),
+                             calib_reduction=1, numpoints=4, oversamp=1.5)
+        self.assertEqual(spy.call_count, 2)
+        for call in spy.call_args_list:
+            self.assertEqual((call.kwargs["numpoints"], call.kwargs["oversamp"]), (4, 1.5))
 
 
 if __name__ == "__main__":
