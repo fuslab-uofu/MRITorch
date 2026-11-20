@@ -38,7 +38,9 @@ mat = ["scipy >= 1.17", "h5py >= 3.16"]
 all = ["mritorch[ismrmrd,nifti,mat]"]
 
 [dependency-groups]
-dev = ["pytest", "scipy"]
+# `uv sync` installs this group by default; mritorch[all] pulls in every
+# optional extra so no test is skipped for a missing dependency
+dev = ["pytest", "scipy", "mritorch[all]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

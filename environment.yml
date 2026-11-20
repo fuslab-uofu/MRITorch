@@ -2,12 +2,14 @@
 # a C++ tool that pip cannot install. MRITorch itself is installed with pip;
 # it only calls this converter as a subprocess.
 #
-#   conda env create -f environment.yml              # env named siemens2ismrmrd
-#   conda env create -f environment.yml -n <name>    # or choose your own name
+#   conda create -n siemens2ismrmrd --no-default-packages --yes
+#   conda env update -n siemens2ismrmrd -f environment.yml
 #
-# Then point MRITorch at the converter (or put it on PATH):
-#
-#   export MRITORCH_SIEMENS_TO_ISMRMRD="$(conda run -n siemens2ismrmrd which siemens_to_ismrmrd)"
+# (Creating the env empty first keeps out any create_default_packages from
+# .condarc; they pull in a Python too new for the converter's Boost, and
+# `conda env create -f environment.yml` then fails.) Then set
+# MRITORCH_SIEMENS_TO_ISMRMRD to the converter's path, as described under
+# "Siemens raw data" in the README.
 name: siemens2ismrmrd
 channels:
   - conda-forge

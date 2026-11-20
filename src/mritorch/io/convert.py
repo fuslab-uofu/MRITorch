@@ -9,10 +9,11 @@ mapVBVD's ``alFree{n}`` corresponds to ``alFree[n-1]``. Check this against a
 real file: XProtocol drops unset entries, which can shift the numbering.
 
 The converter is an optional external C++ tool; it is not installed with
-MRITorch. Install it from the `ismrmrd` conda channel, e.g. with the
-repository's ``environment.yml`` (``conda env create -f environment.yml
-[-n <name>]``), and set ``MRITORCH_SIEMENS_TO_ISMRMRD`` to the converter path
-if it is not on ``PATH``.
+MRITorch. Install it from the `ismrmrd` conda channel with the repository's
+``environment.yml`` (``conda create -n siemens2ismrmrd --no-default-packages``,
+then ``conda env update -n siemens2ismrmrd -f environment.yml``; see the
+README), and set ``MRITORCH_SIEMENS_TO_ISMRMRD`` to the converter path if it is
+not on ``PATH``.
 """
 from __future__ import annotations
 from typing import Optional, Sequence
@@ -29,10 +30,10 @@ def find_converter() -> str:
     if not exe:
         raise FileNotFoundError(
             "siemens_to_ismrmrd not found. It is an optional external tool: install it "
-            "with `conda env create -f environment.yml [-n <name>]` from the MRITorch "
-            "repository (or `conda install -c conda-forge -c ismrmrd siemens_to_ismrmrd "
-            "\"ismrmrd::ismrmrd=1.14.*\"`), then put it on PATH or set "
-            "MRITORCH_SIEMENS_TO_ISMRMRD to its path.")
+            "from the MRITorch repository with `conda create -n siemens2ismrmrd "
+            "--no-default-packages` and then `conda env update -n siemens2ismrmrd "
+            "-f environment.yml` (see the README), then set "
+            "MRITORCH_SIEMENS_TO_ISMRMRD to its path or put it on PATH.")
     return exe
 
 
