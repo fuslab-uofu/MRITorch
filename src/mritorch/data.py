@@ -93,6 +93,10 @@ class KSpace(_Named):
         `Geometry` per slice index, from the acquisition headers.
     sample_time_us : float or None
         Readout dwell time.
+    noise_sample_time_us : float or None
+        Dwell time of the noise-scan samples. Siemens noise-adjust scans can
+        use a different dwell than the imaging readout; noise variance scales
+        with bandwidth, i.e. with ``1 / dwell``.
     """
     data: torch.Tensor
     header: Any = None
@@ -101,6 +105,7 @@ class KSpace(_Named):
     noise: Optional[torch.Tensor] = None
     geometry: dict[int, Geometry] = field(default_factory=dict)
     sample_time_us: Optional[float] = None
+    noise_sample_time_us: Optional[float] = None
     _keep: tuple[str, ...] = field(default=("coil",) + SPATIAL_K, repr=False)
 
 

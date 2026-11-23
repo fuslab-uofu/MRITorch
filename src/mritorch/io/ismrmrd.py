@@ -10,10 +10,22 @@ layout. Cartesian lines are placed so that the k-space center from
 `encodingLimits` (and each readout's `center_sample`) lands at index
 ``N // 2``; partial-Fourier and asymmetric-echo data are therefore
 zero-filled in place.
+
+HDF5 file locking is disabled for every h5py open (`locking=False`): on NFS
+mounts without lock support (e.g. /ceph) default locking hangs. The `ismrmrd`
+package opens files itself, so writers on such mounts also need
+``HDF5_USE_FILE_LOCKING=FALSE`` in the process environment.
+
+Image groups written by `write_image` carry a JSON entry ``mritorch`` in each
+image's Meta (`attribute_string`) with the original dims, lead shape and the
+`Image.meta` dict, so `read_image` restores non-loop lead dims (e.g. pathway,
+echo) exactly.
 """
 from __future__ import annotations
 from typing import Optional, Sequence
 from pathlib import Path
+
+import json
 
 import numpy as np
 import torch
@@ -54,12 +66,21 @@ def _place(idx: np.ndarray, n_encoded: int, center: Optional[int]) -> tuple[int,
         n += 1
 
 
+def _noise_samples(raw: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, float]:
+    """Concatenate noise acquisitions to ``(coil, samples)``; returns samples and dwell (us)."""
+    nh = raw["head"][mask]
+    blocks = [np.asarray(d).view(np.complex64).reshape(c, s)
+              for d, c, s in zip(raw["data"][mask], nh["active_channels"], nh["number_of_samples"])]
+    return np.concatenate(blocks, axis=1), float(nh["sample_time_us"][0])
+
+
 def read_kspace(
         path: str | Path,
         dataset: str="dataset",
         encoding: int=0,
         keep_calibration: bool=False,
         dtype: torch.dtype=torch.complex64,
+        noise_dataset: Optional[str]="noise",
         ) -> KSpace:
     """
     Read and sort k-space from an ISMRMRD HDF5 file.
@@ -77,18 +98,25 @@ def read_kspace(
         Defaults to False.
     dtype : torch.dtype, optional
         Complex dtype of the output. Defaults to `torch.complex64`.
+    noise_dataset : str or None, optional
+        HDF5 group holding a separately converted noise measurement (see
+        `mritorch.io.convert.siemens_to_ismrmrd(noise=True)`). Used only when
+        `dataset` itself has no noise acquisitions. Defaults to 'noise'.
 
     Returns
     -------
     KSpace
-        Sorted k-space with header, noise scans, per-slice geometry and (for
-        non-Cartesian data) trajectory.
+        Sorted k-space with header, noise scans (and their dwell time),
+        per-slice geometry and (for non-Cartesian data) trajectory.
     """
     import h5py
-    with h5py.File(path, "r") as f:
+    noise_raw = None
+    with h5py.File(path, "r", locking=False) as f:
         g = f[dataset]
         header = parse_header(g["xml"][0])
         raw = g["data"][:]
+        if noise_dataset is not None and noise_dataset != dataset and f"{noise_dataset}/data" in f:
+            noise_raw = f[noise_dataset]["data"][:]
 
     head = raw["head"]
     flags = head["flags"]
@@ -101,12 +129,15 @@ def read_kspace(
     skip |= head["encoding_space_ref"] != encoding
     keep = ~skip
 
-    noise = None
+    noise, noise_dwell = None, None
     if noise_mask.any():
-        nh = head[noise_mask]
-        blocks = [np.asarray(d).view(np.complex64).reshape(c, s)
-                  for d, c, s in zip(raw["data"][noise_mask], nh["active_channels"], nh["number_of_samples"])]
-        noise = torch.from_numpy(np.concatenate(blocks, axis=1)).to(dtype)
+        samples, noise_dwell = _noise_samples(raw, noise_mask)
+        noise = torch.from_numpy(samples).to(dtype)
+    elif noise_raw is not None:
+        nmask = _flag_mask(noise_raw["head"]["flags"], "ACQ_IS_NOISE_MEASUREMENT")
+        if nmask.any():
+            samples, noise_dwell = _noise_samples(noise_raw, nmask)
+            noise = torch.from_numpy(samples).to(dtype)
 
     h = head[keep]
     if len(h) == 0:
@@ -161,6 +192,7 @@ def read_kspace(
         data=torch.from_numpy(out).to(dtype), header=header, dims=KSPACE_DIMS,
         traj=traj, noise=noise, geometry=geometry,
         sample_time_us=float(h["sample_time_us"][0]),
+        noise_sample_time_us=noise_dwell,
     )
 
 
@@ -195,6 +227,9 @@ def write_kspace(path: str | Path, ks: KSpace, dataset: str="dataset") -> None:
         if ks.noise is not None:
             acq = ismrmrd.Acquisition.from_array(ks.noise.cpu().to(torch.complex64).numpy())
             acq.set_flag(ismrmrd.ACQ_IS_NOISE_MEASUREMENT)
+            dwell = ks.noise_sample_time_us if ks.noise_sample_time_us is not None else ks.sample_time_us
+            if dwell is not None:
+                acq.sample_time_us = dwell
             dset.append_acquisition(acq)
 
         lines = np.argwhere(np.abs(data).max(axis=(KSPACE_DIMS.index("coil"), -1)) > 0)
@@ -220,20 +255,67 @@ def write_kspace(path: str | Path, ks: KSpace, dataset: str="dataset") -> None:
         dset.close()
 
 
+_META_KEY = "mritorch"
+
+
+def _jsonable(v):
+    """Convert `Image.meta` values to plain JSON (numpy/torch scalars and arrays, paths; NaN/inf -> None)."""
+    if isinstance(v, dict):
+        return {str(k): _jsonable(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    if isinstance(v, torch.Tensor):
+        v = v.detach().cpu().numpy()
+    if isinstance(v, np.ndarray):
+        return _jsonable(v.tolist())
+    if isinstance(v, np.generic):
+        v = v.item()
+    if isinstance(v, float) and not np.isfinite(v):
+        return None
+    if isinstance(v, (str, int, float, bool)) or v is None:
+        return v
+    if isinstance(v, Path):
+        return str(v)
+    raise TypeError(f"Image.meta value of type {type(v).__name__} cannot be stored")
+
+
+def _prepare_group(path: str | Path, dataset: str, group: str, overwrite: bool) -> bool:
+    """Check/clear the target image group; returns whether the file already has an XML header."""
+    import h5py
+    with h5py.File(path, "a", locking=False) as f:
+        target = f"{dataset}/{group}"
+        if target in f:
+            if not overwrite:
+                raise FileExistsError(f"image group {target!r} already exists in {path}; pass overwrite=True")
+            del f[target]
+        return f"{dataset}/xml" in f
+
+
 def write_image(
         path: str | Path,
         image: Image,
         group: str="image_0",
         dataset: str="dataset",
         series_index: int=0,
+        overwrite: bool=False,
         ) -> None:
     """
     Write an `Image` as ISMRMRD images.
 
     Leading dims named in `LOOP_DIMS` set the matching image header counters;
-    a 'coil' dim becomes the image channel axis. All other leading dims are
-    flattened into `image_index`. Geometry comes from `image.slice_geometry`
+    a 'coil' dim becomes the image channel axis. All lead dims are flattened
+    into `image_index`, and the dims, lead shape and `image.meta` are stored
+    as JSON in each image's Meta (key ``mritorch``) so `read_image(...,
+    restore=True)` can restore them. A 'coil' dim is moved to just before
+    ``(z, y, x)``, so the restored dims are in that order. `image.meta` must
+    hold JSON-able values (numpy/torch values and paths are converted;
+    NaN/inf are stored as null). Geometry comes from `image.slice_geometry`
     (by slice index) or `image.geometry`.
+
+    The file's XML header is written only if the file has none, so images
+    appended next to converted raw data keep the raw header. An existing
+    `group` is an error unless `overwrite` is True (the group is then
+    deleted first; HDF5 does not reclaim its space without ``h5repack``).
     """
     import ismrmrd
     img = image
@@ -246,9 +328,15 @@ def write_image(
     lead_names = img.dims[:n_lead]
     lead_shape = data.shape[:n_lead]
 
+    meta = ismrmrd.Meta()
+    meta[_META_KEY] = json.dumps({"dims": list(img.dims), "shape": list(data.shape),
+                                   "meta": _jsonable(image.meta)}, allow_nan=False)
+    attribute_string = meta.serialize()
+
+    has_xml = _prepare_group(path, dataset, group, overwrite)
     dset = ismrmrd.Dataset(str(path), dataset, create_if_needed=True)
     try:
-        if image.header is not None:
+        if image.header is not None and not has_xml:
             dset.write_xml_header(header_to_xml(image.header))
         for i, pos in enumerate(np.ndindex(*lead_shape) if lead_shape else [()]):
             block = data[pos]
@@ -266,32 +354,43 @@ def write_image(
             im.image_index = i
             im.image_series_index = series_index
             im.image_type = ismrmrd.IMTYPE_COMPLEX if np.iscomplexobj(block) else ismrmrd.IMTYPE_MAGNITUDE
+            im.attribute_string = attribute_string
             dset.append_image(group, im)
     finally:
         dset.close()
 
 
-def read_image(path: str | Path, group: str="image_0", dataset: str="dataset") -> Image:
-    """
-    Read ISMRMRD images into an `Image` with `IMAGE_DIMS` layout.
+def _stored_meta(attrs) -> Optional[dict]:
+    import ismrmrd
+    if attrs is None or len(attrs) == 0:
+        return None
+    a = attrs[0]
+    a = a.decode() if isinstance(a, bytes) else str(a)
+    if not a:
+        return None
+    m = ismrmrd.Meta.deserialize(a)
+    return json.loads(m[_META_KEY]) if _META_KEY in m else None
 
-    Images are placed by their header counters; singleton loop dims are
-    kept (call `.squeeze()` to drop them). Geometry is taken per slice from
-    the image headers.
+
+def read_image(path: str | Path, group: str="image_0", dataset: str="dataset", restore: bool=False) -> Image:
+    """
+    Read ISMRMRD images into an `Image`.
+
+    By default images get the `IMAGE_DIMS` layout, placed by their header
+    counters (singleton loop dims are kept; call `.squeeze()` to drop them).
+    With `restore=True`, a group written by `write_image` is returned with
+    its original dims, shape and `meta` (other groups fall back to the
+    counter layout). Geometry is taken per slice from the image headers.
     """
     import h5py
-    with h5py.File(path, "r") as f:
+    with h5py.File(path, "r", locking=False) as f:
         g = f[dataset]
         header = parse_header(g["xml"][0]) if "xml" in g else None
         heads = g[group]["header"][:]
         raw = g[group]["data"][:]
+        attrs = g[group]["attributes"][:] if "attributes" in g[group] else None
     if raw.dtype.names is not None:
         raw = raw["real"] + 1j * raw["imag"]
-    # raw: (n_images, coil, z, y, x)
-    loops = [heads[d].astype(np.int64) for d in LOOP_DIMS]
-    loop_sizes = [int(l.max()) + 1 for l in loops]
-    out = np.zeros((*loop_sizes, *raw.shape[1:]), dtype=raw.dtype)
-    out[tuple(loops)] = raw
 
     slice_geometry: dict[int, Geometry] = {}
     for s in np.unique(heads["slice"]):
@@ -299,6 +398,25 @@ def read_image(path: str | Path, group: str="image_0", dataset: str="dataset") -
         mx, my, mz = (int(v) for v in h["matrix_size"])
         slice_geometry[int(s)] = Geometry.from_header(h, fov=h["field_of_view"], matrix=(mx, my, mz))
     first = next(iter(slice_geometry.values()))
+
+    stored = _stored_meta(attrs) if restore else None
+    if stored is not None:
+        order = np.argsort(heads["image_index"], kind="stable")
+        out = raw[order].reshape(stored["shape"])
+        return Image(
+            data=torch.from_numpy(np.ascontiguousarray(out)), geometry=first, dims=tuple(stored["dims"]),
+            header=header, slice_geometry=slice_geometry, meta=stored["meta"],
+        )
+
+    # raw: (n_images, coil, z, y, x)
+    loops = [heads[d].astype(np.int64) for d in LOOP_DIMS]
+    if len(np.unique(np.stack(loops, axis=1), axis=0)) < len(heads):
+        import warnings
+        warnings.warn(f"images in group {group!r} share loop counters, so the counter layout keeps only the "
+                      "last of each; read with restore=True for groups written by write_image", stacklevel=2)
+    loop_sizes = [int(l.max()) + 1 for l in loops]
+    out = np.zeros((*loop_sizes, *raw.shape[1:]), dtype=raw.dtype)
+    out[tuple(loops)] = raw
     return Image(
         data=torch.from_numpy(out), geometry=first, dims=IMAGE_DIMS,
         header=header, slice_geometry=slice_geometry,

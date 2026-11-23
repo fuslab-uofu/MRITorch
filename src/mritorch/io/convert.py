@@ -45,6 +45,9 @@ def siemens_to_ismrmrd(
         user_stylesheet: Optional[str | Path]=None,
         user_map: Optional[str | Path]=None,
         extra_args: Sequence[str]=(),
+        noise: bool=False,
+        noise_group: str="noise",
+        overwrite: bool=False,
         ) -> Path:
     """
     Convert a Siemens .dat file to ISMRMRD HDF5.
@@ -64,6 +67,20 @@ def siemens_to_ismrmrd(
         Custom parameter stylesheet (.xsl) and map (.xml).
     extra_args : sequence of str, optional
         Additional converter arguments.
+    noise : bool, optional
+        Also convert measurement 1 of a multi-RAID file (the Siemens noise
+        adjustment) into group `noise_group` of the same output file, where
+        `mritorch.io.ismrmrd.read_kspace` picks up its noise acquisitions.
+        Defaults to False.
+    noise_group : str, optional
+        HDF5 group for the noise measurement. Defaults to 'noise'.
+    overwrite : bool, optional
+        Replace an existing output file. Defaults to False: the converter
+        appends to existing files, which would silently duplicate data.
+
+    The converter runs with ``HDF5_USE_FILE_LOCKING=FALSE`` in its
+    environment (only for the subprocess), since default HDF5 locking hangs
+    on NFS mounts without lock support.
 
     Returns
     -------
@@ -72,14 +89,32 @@ def siemens_to_ismrmrd(
     """
     dat_file = Path(dat_file)
     output = Path(output) if output is not None else dat_file.with_suffix(".h5")
-    cmd = [find_converter(), "-f", str(dat_file), "-o", str(output),
-           "-z", str(measurement), "-g", group]
+    if output.exists() and not overwrite:
+        raise FileExistsError(f"{output} exists; pass overwrite=True to replace it")
+    if noise and noise_group == group:
+        raise ValueError("noise_group must differ from group")
+    exe = find_converter()
+    # convert into a temporary file and rename on success, so a failed run
+    # neither leaves a partial output nor destroys an existing one
+    partial = output.with_name(output.name + ".partial")
+    if partial.exists():
+        partial.unlink()
+    env = {**os.environ, "HDF5_USE_FILE_LOCKING": "FALSE"}
+    style = []
     if user_stylesheet is not None:
-        cmd += ["-x", str(user_stylesheet)]
+        style += ["-x", str(user_stylesheet)]
     if user_map is not None:
-        cmd += ["-m", str(user_map)]
-    cmd += list(extra_args)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"siemens_to_ismrmrd failed ({result.returncode}):\n{result.stderr}")
+        style += ["-m", str(user_map)]
+    runs = [(measurement, group)] + ([(1, noise_group)] if noise else [])
+    try:
+        for meas, grp in runs:
+            cmd = [exe, "-f", str(dat_file), "-o", str(partial), "-z", str(meas), "-g", grp, *style, *extra_args]
+            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            if result.returncode != 0:
+                raise RuntimeError(f"siemens_to_ismrmrd failed ({result.returncode}):\n{result.stderr}")
+    except BaseException:
+        if partial.exists():
+            partial.unlink()
+        raise
+    os.replace(partial, output)
     return output

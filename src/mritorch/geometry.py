@@ -120,6 +120,51 @@ def lps_to_ras(affine: torch.Tensor) -> torch.Tensor:
     return flip @ affine
 
 
+# Lab device coordinate system (DCS): the Siemens patient coordinate system
+# (PCS, LPH+) of a head-first-prone patient, as in MedImgeReslicer
+# `calc_coords_RAW` / `getImageVoxelLocationsDCS`. Per patient position, the
+# PCS axes that flip sign to give DCS:
+_PCS_TO_DCS = {
+    "HFP": (1.0, 1.0, 1.0),
+    "HFS": (-1.0, -1.0, 1.0),
+    "FFP": (-1.0, 1.0, -1.0),
+    "FFS": (1.0, -1.0, -1.0),
+}
+
+
+def _dcs_signs(patient_position: str, dtype, device=None) -> torch.Tensor:
+    key = patient_position.strip().upper()
+    if key not in _PCS_TO_DCS:
+        raise ValueError(f"unsupported patient position {patient_position!r}; expected one of {sorted(_PCS_TO_DCS)}")
+    return torch.tensor(_PCS_TO_DCS[key], dtype=dtype, device=device)
+
+
+def pcs_to_dcs(points: torch.Tensor, patient_position: str) -> torch.Tensor:
+    """
+    Convert patient (PCS, LPH+) coordinates to the lab device coordinates (DCS).
+
+    The lab DCS is the PCS of a head-first-prone (HFP) patient, matching the
+    ``PosDCS`` of MedImgeReslicer's `calc_coords_RAW`: HFP is unchanged, HFS
+    flips x and y, FFP flips x and z, FFS flips y and z. The map is its own
+    inverse, so it also converts DCS back to PCS.
+
+    Parameters
+    ----------
+    points : torch.Tensor
+        Coordinates in mm, shape ``(..., 3)``.
+    patient_position : str
+        ISMRMRD/DICOM patient position: 'HFP', 'HFS', 'FFP' or 'FFS'.
+    """
+    return points * _dcs_signs(patient_position, points.dtype, points.device)
+
+
+def pcs_to_dcs_affine(affine: torch.Tensor, patient_position: str) -> torch.Tensor:
+    """Apply `pcs_to_dcs` to a 4x4 voxel-to-PCS affine, giving voxel-to-DCS."""
+    flip = torch.diag(torch.cat([_dcs_signs(patient_position, affine.dtype, affine.device),
+                                 torch.ones(1, dtype=affine.dtype, device=affine.device)]))
+    return flip @ affine
+
+
 def resample(
         image: torch.Tensor,
         source: Geometry,

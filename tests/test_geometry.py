@@ -75,5 +75,35 @@ class TestGeometry(unittest.TestCase):
         self.assertFalse(torch.any(mask[..., :3]))
 
 
+class TestPcsToDcs(unittest.TestCase):
+    """Lab DCS = Siemens PCS (LPH+) of a head-first-prone patient (MedImgeReslicer calc_coords_RAW)."""
+
+    def test_flips_per_patient_position(self):
+        from mritorch.geometry import pcs_to_dcs
+        p = torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float64)
+        expect = {"HFP": (1, 2, 3), "HFS": (-1, -2, 3), "FFP": (-1, 2, -3), "FFS": (1, -2, -3)}
+        for pos, e in expect.items():
+            self.assertTrue(torch.equal(pcs_to_dcs(p, pos), torch.tensor([e], dtype=torch.float64)), pos)
+
+    def test_involution_and_shapes(self):
+        from mritorch.geometry import pcs_to_dcs
+        p = torch.randn(4, 5, 3, dtype=torch.float64)
+        for pos in ("HFP", "HFS", "FFP", "FFS"):
+            self.assertTrue(torch.allclose(pcs_to_dcs(pcs_to_dcs(p, pos), pos), p))
+
+    def test_affine_input(self):
+        from mritorch.geometry import pcs_to_dcs_affine
+        A = torch.eye(4, dtype=torch.float64)
+        A[:3, 3] = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+        D = pcs_to_dcs_affine(A, "HFS")
+        self.assertTrue(torch.equal(D[:3, 3], torch.tensor([-1.0, -2.0, 3.0], dtype=torch.float64)))
+        self.assertTrue(torch.equal(torch.diag(D[:3, :3]), torch.tensor([-1.0, -1.0, 1.0], dtype=torch.float64)))
+
+    def test_unknown_position(self):
+        from mritorch.geometry import pcs_to_dcs
+        with self.assertRaises(ValueError):
+            pcs_to_dcs(torch.zeros(1, 3), "HFDL")
+
+
 if __name__ == "__main__":
     unittest.main()
