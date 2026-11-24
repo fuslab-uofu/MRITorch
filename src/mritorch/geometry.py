@@ -83,14 +83,79 @@ class Geometry:
         matrix : sequence of 3 int
             Matrix size (x, y, z).
         """
-        def vec(name: str) -> tuple[float, float, float]:
-            v = hdr[name] if isinstance(hdr, np.void) else getattr(hdr, name)
-            return tuple(float(a) for a in v)  # type: ignore
         return cls(
-            position=vec("position"), read_dir=vec("read_dir"),
-            phase_dir=vec("phase_dir"), slice_dir=vec("slice_dir"),
+            position=_vec(hdr, "position"), read_dir=_vec(hdr, "read_dir"),
+            phase_dir=_vec(hdr, "phase_dir"), slice_dir=_vec(hdr, "slice_dir"),
             fov=tuple(float(f) for f in fov), matrix=tuple(int(m) for m in matrix),  # type: ignore
         )
+
+    @classmethod
+    def from_mpme_header(cls, hdr, fov: Sequence[float], matrix: Sequence[int]) -> "Geometry":
+        """
+        Geometry of `mritorch.recon.reconstruct_mpme` images from an MPME acquisition header.
+
+        `reconstruct_mpme` returns ``(x, N1, N2, ...)`` in the layout of the
+        MATLAB ``im_MPME_*.mat`` files; as an `Image` (``..., z, y, x``) the
+        axes are x = readout, y = N1 (phase encode), z = N2 (partition). Their
+        relation to the acquisition's ``read_dir``/``phase_dir``/``slice_dir``
+        is fixed by the radial reconstruction:
+
+        - readout: reversed, centred at index ``Nx // 2``;
+        - phase encode: reversed, centred at index ``Ny // 2 - 1``;
+        - partition: as acquired, centred at ``Nz // 2``.
+
+        This reproduces MATLAB ``calc_coords_MPME`` (FUSLab_SA) for the
+        sagittal slab with A>P phase encoding (slice_dir = +x, phase_dir =
+        +y, read_dir = +z in patient coordinates), the only branch that
+        function marks as tested (checked against ``geomInfo.AffineDCS`` of
+        MID 364, 2026-11-13). Any other direction vectors, including sign
+        variants and oblique slabs, follow from the vectors but are not
+        validated against MATLAB and warn. MATLAB centres the slice axis at
+        ``-dSag``; this uses the header position, so the two differ when the
+        slab is offset along the slice normal (warned).
+
+        The Ny//2 - 1 phase centre is folded into ``position``. Resampling the
+        grid with `with_matrix`/`with_fov` (e.g. after zero-filled
+        interpolation) therefore keeps a one-original-voxel phase shift at the
+        new voxel size; rebuild the geometry with this method for a new matrix
+        instead.
+
+        Parameters
+        ----------
+        hdr : ismrmrd.AcquisitionHeader, numpy record or dict
+            First imaging acquisition of the MPME scan.
+        fov : sequence of 3 float
+            Reconstructed FOV (x = readout, y = N1, z = N2) in mm.
+        matrix : sequence of 3 int
+            Reconstructed matrix (x, y, z).
+        """
+        p = np.array(_vec(hdr, "position"))
+        rd, pd, sd = (np.array(_vec(hdr, n)) for n in ("read_dir", "phase_dir", "slice_dir"))
+        dp = float(fov[1]) / int(matrix[1])
+        import warnings
+        sag_ap = sd[0] > 0.999 and pd[1] > 0.999 and rd[2] > 0.999
+        if not sag_ap:
+            warnings.warn("MPME geometry for this slab orientation is not validated against MATLAB "
+                          "calc_coords_MPME (only sagittal, phase A>P is)", stacklevel=2)
+        if abs(float(np.dot(p, sd))) > 1e-3:
+            warnings.warn("MPME slab is offset along the slice normal; MATLAB calc_coords_MPME centres this axis "
+                          "at -dSag, this geometry at the header position (they differ)", stacklevel=2)
+        return cls(
+            position=tuple(float(v) for v in p - dp * pd),       # phase axis centred at Ny//2 - 1
+            read_dir=tuple(float(v) for v in -rd), phase_dir=tuple(float(v) for v in -pd),
+            slice_dir=tuple(float(v) for v in sd),
+            fov=tuple(float(f) for f in fov), matrix=tuple(int(m) for m in matrix),  # type: ignore
+        )
+
+
+def _vec(hdr, name: str) -> tuple[float, float, float]:
+    if isinstance(hdr, dict):
+        v = hdr[name]
+    elif isinstance(hdr, np.void):
+        v = hdr[name]
+    else:
+        v = getattr(hdr, name)
+    return tuple(float(a) for a in v)  # type: ignore
 
 
 def voxel_coordinates(geom: Geometry, dtype: torch.dtype=torch.float64) -> torch.Tensor:

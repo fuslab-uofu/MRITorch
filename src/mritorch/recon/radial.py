@@ -356,3 +356,30 @@ def reconstruct_mpme(
         if progress is not None:
             progress(i + 1, len(planes))
     return (out, all_maps) if return_maps else out
+
+
+def mpme_image(im: torch.Tensor, mk) -> "Image":
+    """
+    Wrap `reconstruct_mpme` output as an `Image` with the MPME geometry.
+
+    Parameters
+    ----------
+    im : torch.Tensor
+        ``(x, N1, N2, pathway, echo)`` from `reconstruct_mpme`.
+    mk : MpmeKSpace
+        The k-space it was reconstructed from (supplies `geometry` and `pathways`).
+
+    Returns
+    -------
+    Image
+        dims ``(pathway, echo, z, y, x)`` with x = readout, y = N1, z = N2 and
+        ``geometry = mk.geometry`` (see `Geometry.from_mpme_header`);
+        ``meta['pathways']`` lists the pathway orders in order.
+    """
+    from mritorch.data import Image
+    g = mk.geometry
+    if g is not None and tuple(im.shape[:3]) != tuple(g.matrix):
+        raise ValueError(f"image grid {tuple(im.shape[:3])} does not match the MPME geometry matrix {g.matrix} "
+                         "(planes subset or non-default shape?)")
+    return Image(data=im.permute(3, 4, 2, 1, 0).contiguous(), dims=("pathway", "echo", "z", "y", "x"),
+                 geometry=mk.geometry, header=mk.header, meta={"pathways": [int(p) for p in mk.pathways]})

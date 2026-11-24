@@ -105,5 +105,56 @@ class TestPcsToDcs(unittest.TestCase):
             pcs_to_dcs(torch.zeros(1, 3), "HFDL")
 
 
+class TestMpmeGeometry(unittest.TestCase):
+    """`Geometry.from_mpme_header` against MATLAB calc_coords_MPME (sagittal slab, PE A>P)."""
+
+    def _head(self):
+        # first acquisition of MID 364 (2026-11-13 NIST session, HFS)
+        return {"position": (0.0, 20.0, 0.0), "read_dir": (0.0, 0.0, 1.0),
+                "phase_dir": (0.0, 1.0, 0.0), "slice_dir": (1.0, 0.0, 0.0)}
+
+    def test_matches_matlab_affine_dcs(self):
+        from mritorch.geometry import pcs_to_dcs_affine
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")       # validated orientation: no warning
+            g = Geometry.from_mpme_header(self._head(), fov=(256.0, 256.0, 256.0), matrix=(160, 160, 160))
+        A = pcs_to_dcs_affine(g.affine, "HFS")
+        # geomInfo.AffineDCS of Analysis/Matlab_Recon/im_MPME_MID00364.mat (0-based (read, N1, N2) indices)
+        matlab = torch.tensor([[0.0, 0.0, -1.6, 128.0],
+                               [0.0, 1.6, 0.0, -146.4],
+                               [-1.6, 0.0, 0.0, 128.0],
+                               [0.0, 0.0, 0.0, 1.0]], dtype=torch.float64)
+        self.assertTrue(torch.allclose(A, matlab, atol=0.1), A)
+
+    def test_corner_voxels(self):
+        from mritorch.geometry import pcs_to_dcs
+        g = Geometry.from_mpme_header(self._head(), fov=(256.0, 256.0, 256.0), matrix=(160, 160, 160))
+        pts = voxel_coordinates(g)                 # (z, y, x, 3) LPS
+        dcs = pcs_to_dcs(pts, "HFS")
+        # MATLAB PosDCS(i+1, j+1, k+1, 1:3) for (read i, N1 j, N2 k); voxel_coordinates is (z=N2, y=N1, x=read)
+        expect = {(0, 0, 0): (128.0, -146.4, 128.0), (159, 0, 0): (128.0, -146.4, -126.4),
+                  (0, 159, 0): (128.0, 108.0, 128.0), (0, 0, 159): (-126.4, -146.4, 128.0),
+                  (80, 80, 80): (0.0, -18.4, 0.0)}
+        for (i, j, k), e in expect.items():
+            self.assertTrue(torch.allclose(dcs[k, j, i], torch.tensor(e, dtype=dcs.dtype), atol=0.1), (i, j, k))
+
+    def test_sign_variant_warns(self):
+        head = {**self._head(), "phase_dir": (0.0, -1.0, 0.0)}
+        with self.assertWarns(UserWarning):
+            Geometry.from_mpme_header(head, fov=(256.0, 256.0, 256.0), matrix=(160, 160, 160))
+
+    def test_slice_offset_warns(self):
+        head = {**self._head(), "position": (5.0, 20.0, 0.0)}
+        with self.assertWarns(UserWarning):
+            Geometry.from_mpme_header(head, fov=(256.0, 256.0, 256.0), matrix=(160, 160, 160))
+
+    def test_other_orientation_warns(self):
+        head = {"position": (0.0, 0.0, 0.0), "read_dir": (1.0, 0.0, 0.0),
+                "phase_dir": (0.0, 1.0, 0.0), "slice_dir": (0.0, 0.0, 1.0)}
+        with self.assertWarns(UserWarning):
+            Geometry.from_mpme_header(head, fov=(256.0, 256.0, 256.0), matrix=(160, 160, 160))
+
+
 if __name__ == "__main__":
     unittest.main()

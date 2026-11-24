@@ -19,6 +19,8 @@ from typing import Optional, Sequence
 import numpy as np
 import torch
 
+from mritorch.geometry import Geometry
+
 from mritorch.fft import ifftc
 from mritorch.filters import fermi
 from mritorch.utils.array import crop_to_size
@@ -40,6 +42,7 @@ class MpmeKSpace:
     angle_increment: float = GOLDEN_ANGLE_DEG
     header: object = None
     meta: dict = field(default_factory=dict)
+    geometry: Optional[Geometry] = None
 
     @property
     def calib_index(self) -> int:
@@ -78,7 +81,8 @@ def read_mpme(
     max_views : int, optional
         Use only the first views.
     planes : sequence of int, optional
-        Keep only these readout planes (applied after the readout transform, to save memory).
+        Keep only these readout planes (applied after the readout transform, to save memory). The returned
+        `geometry` is then None (it describes the full ``n_x``-plane grid only).
     norm : {'ortho', 'backward'}, optional
         Normalization of the readout FFT. 'backward' (1/N) reproduces `recon_mpme.m` (MATLAB `ifft`); images are then
         ``sqrt(n_kx)`` (17.89 for 320 samples) smaller than with 'ortho'.
@@ -86,7 +90,7 @@ def read_mpme(
         Number of acquisitions read at a time.
     """
     import h5py
-    with h5py.File(path, "r") as f:
+    with h5py.File(path, "r", locking=False) as f:
         g = f[dataset]
         header = parse_header(g["xml"][0])
         d = g["data"]
@@ -99,6 +103,9 @@ def read_mpme(
         flags = np.asarray(head["flags"])
         noise = (flags & (np.uint64(1) << np.uint64(18))) != 0
         use = ~noise
+        if not use.any():
+            raise ValueError(f"No imaging acquisitions in {path}")
+        first = head[int(np.argmax(use))]
         n_lin, n_par, n_eco = int(lin[use].max()) + 1, int(par[use].max()) + 1, int(eco[use].max()) + 1
         if max_views is not None:
             n_par = min(n_par, int(max_views))
@@ -137,8 +144,17 @@ def read_mpme(
             j = sel + i0
             tl, tp, te = (torch.from_numpy(a[j].astype(np.int64)) for a in (lin, par, eco))
             out[:, tl, tp, :, :, te] = x                                # advanced indices are separated by slices, so they lead: (acq, x, coil, pwy)
+    geometry = None
+    if hasattr(header, "encoding") and len(planes) == n_x:
+        enc = header.encoding[0]
+        rs = enc.reconSpace
+        # readout FOV of the n_x planes kept after cropping n_kx readout samples
+        fov_x = n_x * float(enc.encodedSpace.fieldOfView_mm.x) / n_kx
+        fov = (fov_x, float(rs.fieldOfView_mm.y), float(rs.fieldOfView_mm.z))
+        geometry = Geometry.from_mpme_header(first, fov=fov, matrix=(n_x, n_lin, n_lin))
     return MpmeKSpace(out, pathways, angle_increment, header,
-                      meta=dict(n_samp=n_samp, n_kx=n_kx, n_x=n_x, path=str(path), planes=planes))
+                      meta=dict(n_samp=n_samp, n_kx=n_kx, n_x=n_x, path=str(path), planes=planes),
+                      geometry=geometry)
 
 
 def _pathways_from_header(header) -> tuple[int, ...]:
