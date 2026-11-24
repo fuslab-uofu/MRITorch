@@ -8,7 +8,6 @@ center).
 """
 from __future__ import annotations
 from typing import Literal, Optional, Sequence
-import warnings
 
 import torch
 
@@ -32,13 +31,17 @@ def reconstruct_cartesian(
         window_params: Optional[Sequence[Optional[float]]]=None,
         matrix: Optional[Sequence[int]]=None,
         espirit: Optional[dict]=None,
+        crop_phase_oversampling: bool=True,
+        window_before_combine: bool=False,
         ) -> Image:
     """
     Reconstruct fully sampled (or zero-filled) Cartesian k-space.
 
     Steps: optional drift correction, inverse FFT over (kz, ky, kx), coil
-    combine, crop to the recon matrix (removes readout oversampling),
-    optional k-space window, optional zero-filled interpolation.
+    combine, crop to the recon matrix (removes readout oversampling; MATLAB
+    order), optional k-space window (after the combine by default, as MATLAB
+    does), optional zero-filled interpolation. With combine 'none'/'espirit'
+    or `window_before_combine` the crop (and window) come before the combine.
 
     Parameters
     ----------
@@ -71,6 +74,17 @@ def reconstruct_cartesian(
     matrix : sequence of int, optional
         Output matrix (x, y, z) for zero-filled interpolation. Defaults to the
         recon matrix.
+    crop_phase_oversampling : bool, optional
+        Crop y to the recon matrix (default). False keeps every encoded
+        phase-encode line, as MATLAB ``crop_to_size(im, [lBaseResolution,
+        lPhaseEncodingLines])`` does; the geometry's y FOV grows accordingly.
+    window_before_combine : bool, optional
+        Apply `window` to each coil image before the combine instead of after
+        it (the coil images are then cropped before the combine too, which
+        changes the single-echo 'ci4' virtual-coil smoothing kernel). A window after a non-linear combine (ci4/optimal/sos) keeps the
+        noise-floor mean but shrinks its variance, so magnitude noise is no
+        longer non-central chi; windowing the (linear) coil images first keeps
+        it non-central chi with sigma scaled by the window RMS.
 
     Returns
     -------
@@ -91,33 +105,54 @@ def reconstruct_cartesian(
     im = ifftc(data, dim=(-3, -2, -1))
 
     if combine in ("ci4", "optimal") and ks.noise is None:
-        warnings.warn("No noise scan; using root-sum-of-squares coil combine")
-        combine = "sos"
+        raise ValueError(f"combine={combine!r} needs a noise scan (KSpace.noise is None); "
+                         "convert with siemens_to_ismrmrd(noise=True) or use combine='sos'")
+    if combine not in ("ci4", "optimal", "sos", "espirit", "none"):
+        raise ValueError(f"Unknown combine option {combine!r}")
+
+    # Crop to the recon matrix (x: readout oversampling; y: phase oversampling unless kept; z: slice oversampling).
+    # MATLAB combines on the oversampled image and crops afterwards. The single-echo 'ci4' path (virtual-coil
+    # combine) smooths in-plane with a kernel tied to the matrix size, so the crop is not interchangeable with it:
+    # crop after the combine, except where the coil images are needed (no combine, ESPIRiT, per-coil window).
+    info = encoding_info(ks.header) if ks.header is not None else None
+    ny_enc = im.shape[-2]
+    ry = ny_enc
+
+    def _crop(x):
+        if info is None:
+            return x
+        rx_, ry_, rz_ = info.recon_matrix
+        ny_out = ry_ if crop_phase_oversampling else ny_enc
+        return crop_to_size(x, (rz_ if x.shape[-3] > 1 else 1, ny_out, rx_))
+
+    def _window(x):
+        params = window_params if window_params is not None else [None, 0.5, 0.5]
+        return ifftc(apply_window(fftc(x), window, params))
+
+    if info is not None:
+        ry = info.recon_matrix[1]
+    crop_first = combine in ("none", "espirit") or (window is not None and window_before_combine)
+    if crop_first:
+        im = _crop(im)
+    if window is not None and window_before_combine:
+        im = _window(im)
+
     if combine == "sos":
         im = sos(im, coil_dim=coil_dim).to(im.dtype)
     elif combine == "optimal":
-        invcov = torch.linalg.inv(noise_covariance(ks.noise.to(im.device)))  # type: ignore
+        invcov = torch.linalg.inv(imaging_noise_covariance(ks).to(im.device))
         im = optimal_combine(im, invcov, coil_dim=coil_dim)
     elif combine == "ci4":
         im = ci4_combine(
-            im, noise_covariance(ks.noise.to(im.device)), coil_dim=coil_dim,  # type: ignore
+            im, imaging_noise_covariance(ks).to(im.device), coil_dim=coil_dim,
             echo_dim=ks.dim("contrast"), time_dim=ks.dim("repetition"), t_ave=t_ave)
-    elif combine not in ("none", "espirit"):
-        raise ValueError(f"Unknown combine option {combine!r}")
-
-    # Crop to the recon matrix (x: readout oversampling; z: slice oversampling)
-    info = encoding_info(ks.header) if ks.header is not None else None
-    if info is not None:
-        rx, ry, rz = info.recon_matrix
-        nz = im.shape[-3]
-        im = crop_to_size(im, (rz if nz > 1 else 1, ry, rx))
-
-    if combine == "espirit":
+    elif combine == "espirit":
         im = _espirit_combine(im, ks, espirit or {})
 
-    if window is not None:
-        params = window_params if window_params is not None else [None, 0.5, 0.5]
-        im = ifftc(apply_window(fftc(im), window, params))
+    if not crop_first:
+        im = _crop(im)
+    if window is not None and not window_before_combine:
+        im = _window(im)
 
     if matrix is not None:
         mx, my, mz = matrix
@@ -125,12 +160,57 @@ def reconstruct_cartesian(
         im = ifftc(resize_center(k, (mz, my, mx)), norm="forward")
 
     out_matrix = (im.shape[-1], im.shape[-2], im.shape[-3])
-    slice_geometry = {s: g.with_matrix(out_matrix) for s, g in ks.geometry.items()}
+    kept_y = (not crop_phase_oversampling) and info is not None and ny_enc > ry
+    slice_geometry = {}
+    for s_, g in ks.geometry.items():
+        if kept_y:
+            g = g.with_fov((g.fov[0], g.fov[1] * ny_enc / ry, g.fov[2]), matrix=(g.matrix[0], ny_enc, g.matrix[2]))
+        slice_geometry[s_] = g.with_matrix(out_matrix)
     dims = LOOP_DIMS + (("coil",) if combine == "none" else ()) + ("z", "y", "x")
     return Image(
         data=im, geometry=slice_geometry.get(0), dims=dims, header=ks.header,
         slice_geometry=slice_geometry, meta={"fft_norm": "ortho"},
     )
+
+
+def imaging_noise_covariance(ks: KSpace) -> torch.Tensor:
+    """
+    Coil noise covariance of the imaging readout.
+
+    The noise scan's covariance (`noise_covariance`), rescaled from its dwell
+    time to the imaging dwell time: thermal noise variance is proportional to
+    the bandwidth, ``1 / dwell``. Siemens noise-adjust scans often use another
+    dwell (e.g. 5 us vs 1.6-20 us for imaging). Unscaled if either dwell is
+    unknown.
+    """
+    if ks.noise is None:
+        raise ValueError("KSpace has no noise scan")
+    cov = noise_covariance(ks.noise)
+    if ks.noise_sample_time_us and ks.sample_time_us:
+        cov = cov * (float(ks.noise_sample_time_us) / float(ks.sample_time_us))
+    return cov
+
+
+def sort_slices(image: Image) -> Image:
+    """
+    Order the 'slice' axis by position along the slice normal (ascending).
+
+    Siemens stores interleaved multi-slice data in acquisition order. Uses
+    ``position . slice_dir`` of each slice's geometry; the permutation (new
+    index -> original slice index) is stored in ``meta['slice_order']``.
+    Assumes `slice_geometry` keys 0..n-1 match the slice axis (as returned by
+    `reconstruct_cartesian`); other per-slice metadata is not permuted.
+    """
+    import numpy as np
+    sd = image.dim("slice")
+    n = image.data.shape[sd]
+    proj = [float(np.dot(image.slice_geometry[i].position, image.slice_geometry[i].slice_dir)) for i in range(n)]
+    order = [int(i) for i in np.argsort(proj, kind="stable")]
+    data = image.data.index_select(sd, torch.tensor(order, device=image.data.device))
+    geometry = {new: image.slice_geometry[old] for new, old in enumerate(order)}
+    meta = {**image.meta, "slice_order": order}
+    return Image(data=data, geometry=geometry.get(0), dims=image.dims, header=image.header,
+                 slice_geometry=geometry, meta=meta)
 
 
 def _espirit_combine(im: torch.Tensor, ks: KSpace, options: dict) -> torch.Tensor:
